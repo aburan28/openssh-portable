@@ -1,4 +1,4 @@
-/*	$OpenBSD: ssherr.c,v 1.8 2018/07/03 11:39:54 djm Exp $	*/
+/*	$OpenBSD: ssherr.c,v 1.12 2026/06/14 03:59:34 djm Exp $	*/
 /*
  * Copyright (c) 2011 Damien Miller
  *
@@ -22,6 +22,8 @@
 const char *
 ssh_err(int n)
 {
+	const char *msg = NULL;
+
 	switch (n) {
 	case SSH_ERR_SUCCESS:
 		return "success";
@@ -68,7 +70,10 @@ ssh_err(int n)
 	case SSH_ERR_SIGNATURE_INVALID:
 		return "incorrect signature";
 	case SSH_ERR_LIBCRYPTO_ERROR:
-		return "error in libcrypto";  /* XXX fetch and return */
+		msg = ssherr_libcrypto();
+		return msg != NULL ? msg : "error in libcrypto";
+	case SSH_ERR_INTERNAL_CRYPTO_ERROR:
+		return "cryptographic operation failed";
 	case SSH_ERR_UNEXPECTED_TRAILING_DATA:
 		return "unexpected bytes remain after decoding";
 	case SSH_ERR_SYSTEM_ERROR:
@@ -141,6 +146,10 @@ ssh_err(int n)
 		return "number is too large";
 	case SSH_ERR_SIGN_ALG_UNSUPPORTED:
 		return "signature algorithm not supported";
+	case SSH_ERR_FEATURE_UNSUPPORTED:
+		return "requested feature not supported";
+	case SSH_ERR_DEVICE_NOT_FOUND:
+		return "device not found";
 	default:
 		return "unknown error";
 	}

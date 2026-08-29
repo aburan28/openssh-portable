@@ -1,4 +1,4 @@
-/* $OpenBSD: mac.c,v 1.34 2017/05/08 22:57:38 djm Exp $ */
+/* $OpenBSD: mac.c,v 1.39 2026/05/13 05:58:58 djm Exp $ */
 /*
  * Copyright (c) 2001 Markus Friedl.  All rights reserved.
  *
@@ -27,8 +27,9 @@
 
 #include <sys/types.h>
 
-#include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 #include "digest.h"
 #include "hmac.h"
@@ -58,10 +59,8 @@ static const struct macalg macs[] = {
 	/* Encrypt-and-MAC (encrypt-and-authenticate) variants */
 	{ "hmac-sha1",				SSH_DIGEST, SSH_DIGEST_SHA1, 0, 0, 0, 0 },
 	{ "hmac-sha1-96",			SSH_DIGEST, SSH_DIGEST_SHA1, 96, 0, 0, 0 },
-#ifdef HAVE_EVP_SHA256
 	{ "hmac-sha2-256",			SSH_DIGEST, SSH_DIGEST_SHA256, 0, 0, 0, 0 },
 	{ "hmac-sha2-512",			SSH_DIGEST, SSH_DIGEST_SHA512, 0, 0, 0, 0 },
-#endif
 	{ "hmac-md5",				SSH_DIGEST, SSH_DIGEST_MD5, 0, 0, 0, 0 },
 	{ "hmac-md5-96",			SSH_DIGEST, SSH_DIGEST_MD5, 96, 0, 0, 0 },
 	{ "umac-64@openssh.com",		SSH_UMAC, 0, 0, 128, 64, 0 },
@@ -70,10 +69,8 @@ static const struct macalg macs[] = {
 	/* Encrypt-then-MAC variants */
 	{ "hmac-sha1-etm@openssh.com",		SSH_DIGEST, SSH_DIGEST_SHA1, 0, 0, 0, 1 },
 	{ "hmac-sha1-96-etm@openssh.com",	SSH_DIGEST, SSH_DIGEST_SHA1, 96, 0, 0, 1 },
-#ifdef HAVE_EVP_SHA256
 	{ "hmac-sha2-256-etm@openssh.com",	SSH_DIGEST, SSH_DIGEST_SHA256, 0, 0, 0, 1 },
 	{ "hmac-sha2-512-etm@openssh.com",	SSH_DIGEST, SSH_DIGEST_SHA512, 0, 0, 0, 1 },
-#endif
 	{ "hmac-md5-etm@openssh.com",		SSH_DIGEST, SSH_DIGEST_MD5, 0, 0, 0, 1 },
 	{ "hmac-md5-96-etm@openssh.com",	SSH_DIGEST, SSH_DIGEST_MD5, 96, 0, 0, 1 },
 	{ "umac-64-etm@openssh.com",		SSH_UMAC, 0, 0, 128, 64, 1 },
@@ -86,22 +83,13 @@ static const struct macalg macs[] = {
 char *
 mac_alg_list(char sep)
 {
-	char *ret = NULL, *tmp;
-	size_t nlen, rlen = 0;
+	char *ret = NULL;
 	const struct macalg *m;
+	char sep_str[2] = {sep, '\0'};
 
-	for (m = macs; m->name != NULL; m++) {
-		if (ret != NULL)
-			ret[rlen++] = sep;
-		nlen = strlen(m->name);
-		if ((tmp = realloc(ret, rlen + nlen + 2)) == NULL) {
-			free(ret);
-			return NULL;
-		}
-		ret = tmp;
-		memcpy(ret + rlen, m->name, nlen + 1);
-		rlen += nlen;
-	}
+	for (m = macs; m->name != NULL; m++)
+		xextendf(&ret, sep_str, "%s", m->name);
+
 	return ret;
 }
 
@@ -164,13 +152,13 @@ mac_init(struct sshmac *mac)
 }
 
 int
-mac_compute(struct sshmac *mac, u_int32_t seqno,
+mac_compute(struct sshmac *mac, uint32_t seqno,
     const u_char *data, int datalen,
     u_char *digest, size_t dlen)
 {
 	static union {
 		u_char m[SSH_DIGEST_MAX_LENGTH];
-		u_int64_t for_align;
+		uint64_t for_align;
 	} u;
 	u_char b[4];
 	u_char nonce[8];
@@ -210,7 +198,7 @@ mac_compute(struct sshmac *mac, u_int32_t seqno,
 }
 
 int
-mac_check(struct sshmac *mac, u_int32_t seqno,
+mac_check(struct sshmac *mac, uint32_t seqno,
     const u_char *data, size_t dlen,
     const u_char *theirmac, size_t mlen)
 {
@@ -248,6 +236,7 @@ int
 mac_valid(const char *names)
 {
 	char *maclist, *cp, *p;
+	int found = 0;
 
 	if (names == NULL || strcmp(names, "") == 0)
 		return 0;
@@ -258,8 +247,9 @@ mac_valid(const char *names)
 		if (mac_setup(NULL, p) < 0) {
 			free(maclist);
 			return 0;
-		}
+		} else
+			found = 1;
 	}
 	free(maclist);
-	return 1;
+	return found;
 }

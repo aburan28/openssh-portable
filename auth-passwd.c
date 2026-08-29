@@ -1,4 +1,4 @@
-/* $OpenBSD: auth-passwd.c,v 1.47 2018/07/09 21:26:02 markus Exp $ */
+/* $OpenBSD: auth-passwd.c,v 1.49 2025/05/08 17:32:53 tedu Exp $ */
 /*
  * Author: Tatu Ylonen <ylo@cs.hut.fi>
  * Copyright (c) 1995 Tatu Ylonen <ylo@cs.hut.fi>, Espoo, Finland
@@ -133,7 +133,7 @@ static void
 warn_expiry(Authctxt *authctxt, auth_session_t *as)
 {
 	int r;
-	quad_t pwtimeleft, actimeleft, daysleft, pwwarntime, acwarntime;
+	int64_t pwtimeleft, actimeleft, daysleft, pwwarntime, acwarntime;
 
 	pwwarntime = acwarntime = TWO_WEEKS;
 
@@ -152,14 +152,14 @@ warn_expiry(Authctxt *authctxt, auth_session_t *as)
 		if ((r = sshbuf_putf(loginmsg,
 		    "Your password will expire in %lld day%s.\n",
 		    daysleft, daysleft == 1 ? "" : "s")) != 0)
-			fatal("%s: buffer error: %s", __func__, ssh_err(r));
+			fatal_fr(r, "buffer error");
 	}
 	if (actimeleft != 0 && actimeleft < acwarntime) {
 		daysleft = actimeleft / DAY + 1;
 		if ((r = sshbuf_putf(loginmsg,
 		    "Your account will expire in %lld day%s.\n",
 		    daysleft, daysleft == 1 ? "" : "s")) != 0)
-			fatal("%s: buffer error: %s", __func__, ssh_err(r));
+			fatal_fr(r, "buffer error");
 	}
 }
 
@@ -197,6 +197,9 @@ sys_auth_passwd(struct ssh *ssh, const char *password)
 
 	/* Just use the supplied fake password if authctxt is invalid */
 	char *pw_password = authctxt->valid ? shadow_pw(pw) : pw->pw_passwd;
+
+	if (pw_password == NULL)
+		return 0;
 
 	/* Check for users with no password. */
 	if (strcmp(pw_password, "") == 0 && strcmp(password, "") == 0)

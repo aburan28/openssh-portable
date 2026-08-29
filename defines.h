@@ -55,7 +55,6 @@ enum
 /*
  * Definitions for IP type of service (ip_tos)
  */
-#include <netinet/in_systm.h>
 #include <netinet/ip.h>
 #ifndef IPTOS_LOWDELAY
 # define IPTOS_LOWDELAY          0x10
@@ -66,7 +65,9 @@ enum
 #endif /* IPTOS_LOWDELAY */
 
 /*
- * Definitions for DiffServ Codepoints as per RFC2474
+ * Definitions for DiffServ Codepoints as per RFCs 2474, 3246, 4594 & 8622.
+ * These are the 6 most significant bits as they appear on the wire, so the
+ * two least significant bits must be zero.
  */
 #ifndef IPTOS_DSCP_AF11
 # define	IPTOS_DSCP_AF11		0x28
@@ -93,9 +94,24 @@ enum
 # define	IPTOS_DSCP_CS6		0xc0
 # define	IPTOS_DSCP_CS7		0xe0
 #endif /* IPTOS_DSCP_CS0 */
+#ifndef IPTOS_DSCP_VA
+# define	IPTOS_DSCP_VA		0xb0
+#endif /* IPTOS_DSCP_VA */
 #ifndef IPTOS_DSCP_EF
 # define	IPTOS_DSCP_EF		0xb8
 #endif /* IPTOS_DSCP_EF */
+#ifndef IPTOS_DSCP_LE
+# define	IPTOS_DSCP_LE		0x04
+#endif /* IPTOS_DSCP_LE */
+#ifndef IPTOS_PREC_CRITIC_ECP
+# define IPTOS_PREC_CRITIC_ECP		0xa0
+#endif
+#ifndef IPTOS_PREC_INTERNETCONTROL
+# define IPTOS_PREC_INTERNETCONTROL	0xc0
+#endif
+#ifndef IPTOS_PREC_NETCONTROL
+# define IPTOS_PREC_NETCONTROL		0xe0
+#endif
 
 #ifndef PATH_MAX
 # ifdef _POSIX_PATH_MAX
@@ -108,10 +124,6 @@ enum
 #  define MAXPATHLEN PATH_MAX
 # else /* PATH_MAX */
 #  define MAXPATHLEN 64
-/* realpath uses a fixed buffer of size MAXPATHLEN, so force use of ours */
-#  ifndef BROKEN_REALPATH
-#   define BROKEN_REALPATH 1
-#  endif /* BROKEN_REALPATH */
 # endif /* PATH_MAX */
 #endif /* MAXPATHLEN */
 
@@ -206,7 +218,9 @@ including rpc/rpc.h breaks Solaris 6
 /* (or die trying) */
 
 #ifndef HAVE_U_INT
+typedef unsigned short u_short;
 typedef unsigned int u_int;
+typedef unsigned long u_long;
 #endif
 
 #ifndef HAVE_INTXX_T
@@ -246,6 +260,21 @@ typedef unsigned int u_int32_t;
 #define __BIT_TYPES_DEFINED__
 #endif
 
+#if !defined(LLONG_MIN) && defined(LONG_LONG_MIN)
+#define LLONG_MIN LONG_LONG_MIN
+#endif
+#if !defined(LLONG_MAX) && defined(LONG_LONG_MAX)
+#define LLONG_MAX LONG_LONG_MAX
+#endif
+
+#ifndef UINT32_MAX
+# if defined(HAVE_DECL_UINT32_MAX) && (HAVE_DECL_UINT32_MAX == 0)
+#  if (SIZEOF_INT == 4)
+#    define UINT32_MAX	UINT_MAX
+#  endif
+# endif
+#endif
+
 /* 64-bit types */
 #ifndef HAVE_INT64_T
 # if (SIZEOF_LONG_INT == 8)
@@ -279,6 +308,12 @@ typedef long long intmax_t;
 
 #ifndef HAVE_UINTMAX_T
 typedef unsigned long long uintmax_t;
+#endif
+
+#if SIZEOF_TIME_T == SIZEOF_LONG_LONG_INT
+# define SSH_TIME_T_MAX LLONG_MAX
+#else
+# define SSH_TIME_T_MAX INT_MAX
 #endif
 
 #ifndef HAVE_U_CHAR
@@ -328,6 +363,7 @@ typedef unsigned int size_t;
 
 #ifndef HAVE_SSIZE_T
 typedef int ssize_t;
+#define SSIZE_MAX INT_MAX
 # define HAVE_SSIZE_T
 #endif /* HAVE_SSIZE_T */
 
@@ -481,6 +517,13 @@ struct winsize {
    } while (0)
 #endif
 
+#ifndef timespeccmp
+#define	timespeccmp(tsp, usp, cmp)					\
+	(((tsp)->tv_sec == (usp)->tv_sec) ?				\
+	    ((tsp)->tv_nsec cmp (usp)->tv_nsec) :			\
+	    ((tsp)->tv_sec cmp (usp)->tv_sec))
+#endif
+
 #ifndef TIMEVAL_TO_TIMESPEC
 #define	TIMEVAL_TO_TIMESPEC(tv, ts) {					\
 	(ts)->tv_sec = (tv)->tv_sec;					\
@@ -500,6 +543,39 @@ struct winsize {
 	(((tsp)->tv_sec == (usp)->tv_sec) ?				\
 	    ((tsp)->tv_nsec cmp (usp)->tv_nsec) :			\
 	    ((tsp)->tv_sec cmp (usp)->tv_sec))
+#endif
+
+/* Operations on timespecs. */
+#ifndef timespecclear
+#define	timespecclear(tsp)		(tsp)->tv_sec = (tsp)->tv_nsec = 0
+#endif
+#ifndef timespeccmp
+#define	timespeccmp(tsp, usp, cmp)					\
+	(((tsp)->tv_sec == (usp)->tv_sec) ?				\
+	    ((tsp)->tv_nsec cmp (usp)->tv_nsec) :			\
+	    ((tsp)->tv_sec cmp (usp)->tv_sec))
+#endif
+#ifndef timespecadd
+#define	timespecadd(tsp, usp, vsp)					\
+	do {								\
+		(vsp)->tv_sec = (tsp)->tv_sec + (usp)->tv_sec;		\
+		(vsp)->tv_nsec = (tsp)->tv_nsec + (usp)->tv_nsec;	\
+		if ((vsp)->tv_nsec >= 1000000000L) {			\
+			(vsp)->tv_sec++;				\
+			(vsp)->tv_nsec -= 1000000000L;			\
+		}							\
+	} while (0)
+#endif
+#ifndef timespecsub
+#define	timespecsub(tsp, usp, vsp)					\
+	do {								\
+		(vsp)->tv_sec = (tsp)->tv_sec - (usp)->tv_sec;		\
+		(vsp)->tv_nsec = (tsp)->tv_nsec - (usp)->tv_nsec;	\
+		if ((vsp)->tv_nsec < 0) {				\
+			(vsp)->tv_sec--;				\
+			(vsp)->tv_nsec += 1000000000L;			\
+		}							\
+	} while (0)
 #endif
 
 #ifndef __P
@@ -526,6 +602,10 @@ struct winsize {
 
 #if !defined(HAVE_ATTRIBUTE__NONNULL__) && !defined(__nonnull__)
 # define __nonnull__(x)
+#endif
+
+#if !defined(HAVE_ATTRIBUTE__NONSTRING__) && !defined(__nonstring__)
+# define __nonstring__
 #endif
 
 #ifndef OSSH_ALIGNBYTES
@@ -580,6 +660,53 @@ struct winsize {
 #  define BYTE_ORDER LITTLE_ENDIAN
 # endif /* WORDS_BIGENDIAN */
 #endif /* BYTE_ORDER */
+
+#if (defined(HAVE_DECL_LE32TOH) && HAVE_DECL_LE32TOH == 0) || \
+    (defined(HAVE_DECL_LE64TOH) && HAVE_DECL_LE64TOH == 0) || \
+    (defined(HAVE_DECL_HTOLE64) && HAVE_DECL_HTOLE64 == 0) || \
+    (defined(HAVE_DECL_HTOBE32) && HAVE_DECL_HTOBE32 == 0)
+# define openssh_swap32(v)					\
+	(uint32_t)(((uint32_t)(v) & 0xff) << 24 |		\
+	((uint32_t)(v) & 0xff00) << 8 |				\
+	((uint32_t)(v) & 0xff0000) >> 8 |			\
+	((uint32_t)(v) & 0xff000000) >> 24)
+# define openssh_swap64(v)					\
+	(uint64_t)((((uint64_t)(v) & 0xff) << 56) |		\
+	((uint64_t)(v) & 0xff00ULL) << 40 |			\
+	((uint64_t)(v) & 0xff0000ULL) << 24 |			\
+	((uint64_t)(v) & 0xff000000ULL) << 8 |		\
+	((uint64_t)(v) & 0xff00000000ULL) >> 8 |		\
+	((uint64_t)(v) & 0xff0000000000ULL) >> 24 |		\
+	((uint64_t)(v) & 0xff000000000000ULL) >> 40 |		\
+	((uint64_t)(v) & 0xff00000000000000ULL) >> 56)
+# ifdef WORDS_BIGENDIAN
+#  if defined(HAVE_DECL_LE32TOH) && HAVE_DECL_LE32TOH == 0
+#   define le32toh(v) (openssh_swap32(v))
+#  endif
+#  if defined(HAVE_DECL_LE64TOH) && HAVE_DECL_LE64TOH == 0
+#   define le64toh(v) (openssh_swap64(v))
+#  endif
+#  if defined(HAVE_DECL_HTOLE64) && HAVE_DECL_HTOLE64 == 0
+#   define htole64(v) (openssh_swap64(v))
+#  endif
+#  if defined(HAVE_DECL_HTOBE32) && HAVE_DECL_HTOBE32 == 0
+#   define htobe32(v) ((uint32_t)v)
+#  endif
+# else
+#  if defined(HAVE_DECL_LE32TOH) && HAVE_DECL_LE32TOH == 0
+#   define le32toh(v) ((uint32_t)v)
+#  endif
+#  if defined(HAVE_DECL_LE64TOH) && HAVE_DECL_LE64TOH == 0
+#    define le64toh(v) ((uint64_t)v)
+#  endif
+#  if defined(HAVE_DECL_HTOLE64) && HAVE_DECL_HTOLE64 == 0
+#   define htole64(v) ((uint64_t)v)
+#  endif
+#  if defined(HAVE_DECL_HTOBE32) && HAVE_DECL_HTOBE32 == 0
+#   define htobe32(v) (openssh_swap32(v))
+#  endif
+# endif
+#endif
 
 /* Function replacement / compatibility hacks */
 
@@ -805,10 +932,6 @@ struct winsize {
 # define getgroups(a,b) ((a)==0 && (b)==NULL ? NGROUPS_MAX : getgroups((a),(b)))
 #endif
 
-#if defined(HAVE_MMAP) && defined(BROKEN_MMAP)
-# undef HAVE_MMAP
-#endif
-
 #ifndef IOV_MAX
 # if defined(_XOPEN_IOV_MAX)
 #  define	IOV_MAX		_XOPEN_IOV_MAX
@@ -834,9 +957,10 @@ struct winsize {
 /*
  * We want functions in openbsd-compat, if enabled, to override system ones.
  * We no-op out the weak symbol definition rather than remove it to reduce
- * future sync problems.
+ * future sync problems.  Some compilers (eg Unixware) do not allow an
+ * empty statement, so we use a bogus function declaration.
  */
-#define DEF_WEAK(x)
+#define DEF_WEAK(x)	void __ssh_compat_weak_##x(void)
 
 /*
  * Platforms that have arc4random_uniform() and not arc4random_stir()
@@ -866,11 +990,21 @@ struct winsize {
 # endif /* gcc version */
 #endif /* __predict_true */
 
-#if defined(HAVE_GLOB_H) && defined(GLOB_HAS_ALTDIRFUNC) && \
-    defined(GLOB_HAS_GL_MATCHC) && defined(GLOB_HAS_GL_STATV) && \
-    defined(HAVE_DECL_GLOB_NOMATCH) &&  HAVE_DECL_GLOB_NOMATCH != 0 && \
-    !defined(BROKEN_GLOB)
-# define USE_SYSTEM_GLOB
+/*
+ * sntrup761 uses variable length arrays and c99-style declarations after code,
+ * so only enable if the compiler supports them.
+ */
+#if defined(VARIABLE_LENGTH_ARRAYS) && defined(VARIABLE_DECLARATION_AFTER_CODE)
+# define USE_SNTRUP761X25519	1
+/* The ML-KEM768 and ML-DSA implementations also uses C89 features */
+# define USE_MLKEM768X25519	1
+# define USE_MLDSA		1
+#endif
+
+#if defined(HAVE_DECL_INFINITY) && HAVE_DECL_INFINITY == 0
+# if defined(HAVE_DECL___BUILTIN_INFF) && HAVE_DECL___BUILTIN_INFF == 1
+#  define INFINITY __builtin_inff()
+# endif
 #endif
 
 #endif /* _DEFINES_H */

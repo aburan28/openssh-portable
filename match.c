@@ -1,4 +1,4 @@
-/* $OpenBSD: match.c,v 1.38 2018/07/04 13:49:31 djm Exp $ */
+/* $OpenBSD: match.c,v 1.46 2026/05/31 04:19:16 djm Exp $ */
 /*
  * Author: Tatu Ylonen <ylo@cs.hut.fi>
  * Copyright (c) 1995 Tatu Ylonen <ylo@cs.hut.fi>, Espoo, Finland
@@ -13,6 +13,7 @@
  */
 /*
  * Copyright (c) 2000 Markus Friedl.  All rights reserved.
+ * Copyright (c) 2026 Damien Miller.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -42,6 +43,7 @@
 #include <ctype.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdarg.h>
 #include <stdio.h>
 
 #include "xmalloc.h"
@@ -49,66 +51,104 @@
 #include "misc.h"
 
 /*
- * Returns true if the given string matches the pattern (which may contain ?
- * and * as wildcards), and zero if it does not match.
+ * Computes the epsilon closure of an NFA set.
+ * In our wildcard grammar, epsilon transitions only exist for '*' wildcards,
+ * allowing us to transition from state i to i+1 without consuming input.
+ *
+ * This function modifies 'states' in place.
  */
+static void
+epsilon_closure(char *states, const char *pattern, size_t M)
+{
+	size_t i;
 
+	/* only need a forward pass as there are no back jumps in our grammar */
+	for (i = 0; i < M; i++) {
+		if (!states[i] || pattern[i] != '*')
+			continue;
+		/*
+		 * State i is active, and pattern[i] is '*', so we can
+		 * epsilon-transition to i+1.
+		 */
+		states[i + 1] = 1;
+	}
+}
+
+/*
+ * Returns true if the given string matches the pattern (which may contain ?
+ * and * as wildcards), and zero if it does not match. Uses an NFA internally.
+ */
 int
 match_pattern(const char *s, const char *pattern)
 {
-	for (;;) {
-		/* If at end of pattern, accept if also at end of string. */
-		if (!*pattern)
-			return !*s;
+	size_t M;
+	size_t i;
+	char *states, *next_states, *tmp;
+	int active, matched = 0;
 
-		if (*pattern == '*') {
-			/* Skip the asterisk. */
-			pattern++;
+	/* trivial case: empty pattern vs empty input */
+	if ((M = strlen(pattern)) == 0)
+		return *s == '\0';
 
-			/* If at end of pattern, accept immediately. */
-			if (!*pattern)
-				return 1;
+	/* A state for each pattern character, plus one final accepting state */
+	states = xcalloc(M + 1, sizeof(*states));
+	next_states = xcalloc(M + 1, sizeof(*next_states));
 
-			/* If next character in pattern is known, optimize. */
-			if (*pattern != '?' && *pattern != '*') {
+	/* Initial state: state 0 is active */
+	states[0] = 1;
+	/* Other states might be reachable now if the pattern starts with '*' */
+	epsilon_closure(states, pattern, M);
+
+	for (; *s; s++) {
+		memset(next_states, 0, M + 1);
+
+		/* Calculate the reachable next states given the input char */
+		for (i = 0; i < M; i++) {
+			if (!states[i])
+				continue;
+			if (pattern[i] == '*') {
 				/*
-				 * Look instances of the next character in
-				 * pattern, and try to match starting from
-				 * those.
+				 * '*' matches any character, so we can
+				 * stay in state i
 				 */
-				for (; *s; s++)
-					if (*s == *pattern &&
-					    match_pattern(s + 1, pattern + 1))
-						return 1;
-				/* Failed. */
-				return 0;
+				next_states[i] = 1;
+			} else if (pattern[i] == '?' || pattern[i] == *s) {
+				/*
+				 * '?' matches any character, or we have
+				 * a literal match.
+				 */
+				next_states[i + 1] = 1;
 			}
-			/*
-			 * Move ahead one character at a time and try to
-			 * match at each position.
-			 */
-			for (; *s; s++)
-				if (match_pattern(s, pattern))
-					return 1;
-			/* Failed. */
-			return 0;
 		}
-		/*
-		 * There must be at least one more character in the string.
-		 * If we are at the end, fail.
-		 */
-		if (!*s)
-			return 0;
 
-		/* Check if the next character of the string is acceptable. */
-		if (*pattern != '?' && *pattern != *s)
-			return 0;
+		/* Expand the reachable next states with epsilon transitions */
+		epsilon_closure(next_states, pattern, M);
 
-		/* Move to the next character, both in string and in pattern. */
-		s++;
-		pattern++;
+		/* Swap states and next_states */
+		tmp = states;
+		states = next_states;
+		next_states = tmp;
+
+		/* Check if we have any active pattern states left */
+		active = 0;
+		for (i = 0; i <= M; i++) {
+			if (states[i]) {
+				active = 1;
+				break;
+			}
+		}
+		if (!active)
+			goto out; /* No active states, fail early */
 	}
-	/* NOTREACHED */
+	/*
+	 * We matched only if we ended up in the final, accepting state
+	 * after consuming all the input.
+	 */
+	matched = states[M];
+ out:
+	free(states);
+	free(next_states);
+	return matched;
 }
 
 /*
@@ -170,6 +210,19 @@ match_pattern_list(const char *string, const char *pattern, int dolower)
 	return got_positive;
 }
 
+/* Match a list representing users or groups. */
+int
+match_usergroup_pattern_list(const char *string, const char *pattern)
+{
+#ifdef HAVE_CYGWIN
+	/* Windows usernames may be Unicode and are not case sensitive */
+	return cygwin_ug_match_pattern_list(string, pattern);
+#else
+	/* Case sensitive match */
+	return match_pattern_list(string, pattern, 0);
+#endif
+}
+
 /*
  * Tries to match the host name (which must be in all lowercase) against the
  * comma-separated sequence of subpatterns (each possibly preceded by ! to
@@ -227,17 +280,20 @@ match_user(const char *user, const char *host, const char *ipaddr,
 
 	/* test mode */
 	if (user == NULL && host == NULL && ipaddr == NULL) {
-		if ((p = strchr(pattern, '@')) != NULL &&
+		if ((p = strrchr(pattern, '@')) != NULL &&
 		    match_host_and_ip(NULL, NULL, p + 1) < 0)
 			return -1;
 		return 0;
 	}
 
-	if ((p = strchr(pattern,'@')) == NULL)
+	if (user == NULL)
+		return 0; /* shouldn't happen */
+
+	if (strrchr(pattern, '@') == NULL)
 		return match_pattern(user, pattern);
 
 	pat = xstrdup(pattern);
-	p = strchr(pat, '@');
+	p = strrchr(pat, '@');
 	*p++ = '\0';
 
 	if ((ret = match_pattern(user, pat)) == 1)
@@ -295,13 +351,13 @@ match_list(const char *client, const char *server, u_int *next)
 
 /*
  * Filter proposal using pattern-list filter.
- * "blacklist" determines sense of filter:
+ * "denylist" determines sense of filter:
  * non-zero indicates that items matching filter should be excluded.
  * zero indicates that only items matching filter should be included.
  * returns NULL on allocation error, otherwise caller must free result.
  */
 static char *
-filter_list(const char *proposal, const char *filter, int blacklist)
+filter_list(const char *proposal, const char *filter, int denylist)
 {
 	size_t len = strlen(proposal) + 1;
 	char *fix_prop = malloc(len);
@@ -319,7 +375,7 @@ filter_list(const char *proposal, const char *filter, int blacklist)
 	*fix_prop = '\0';
 	while ((cp = strsep(&tmp, ",")) != NULL) {
 		r = match_pattern_list(cp, filter, 0);
-		if ((blacklist && r != 1) || (!blacklist && r == 1)) {
+		if ((denylist && r != 1) || (!denylist && r == 1)) {
 			if (*fix_prop != '\0')
 				strlcat(fix_prop, ",", len);
 			strlcat(fix_prop, cp, len);
@@ -334,7 +390,7 @@ filter_list(const char *proposal, const char *filter, int blacklist)
  * the 'filter' pattern list. Caller must free returned string.
  */
 char *
-match_filter_blacklist(const char *proposal, const char *filter)
+match_filter_denylist(const char *proposal, const char *filter)
 {
 	return filter_list(proposal, filter, 1);
 }
@@ -344,7 +400,7 @@ match_filter_blacklist(const char *proposal, const char *filter)
  * the 'filter' pattern list. Caller must free returned string.
  */
 char *
-match_filter_whitelist(const char *proposal, const char *filter)
+match_filter_allowlist(const char *proposal, const char *filter)
 {
 	return filter_list(proposal, filter, 0);
 }

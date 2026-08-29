@@ -1,4 +1,4 @@
-/* $OpenBSD: dispatch.c,v 1.31 2017/05/31 07:00:13 markus Exp $ */
+/* $OpenBSD: dispatch.c,v 1.35 2026/03/03 09:57:25 dtucker Exp $ */
 /*
  * Copyright (c) 2000 Markus Friedl.  All rights reserved.
  *
@@ -34,27 +34,26 @@
 #include "log.h"
 #include "dispatch.h"
 #include "packet.h"
-#include "compat.h"
 #include "ssherr.h"
 
 int
-dispatch_protocol_error(int type, u_int32_t seq, struct ssh *ssh)
+dispatch_protocol_error(int type, uint32_t seq, struct ssh *ssh)
 {
 	int r;
 
-	logit("dispatch_protocol_error: type %d seq %u", type, seq);
+	logit_f("type %d seq %u", type, seq);
 	if ((r = sshpkt_start(ssh, SSH2_MSG_UNIMPLEMENTED)) != 0 ||
 	    (r = sshpkt_put_u32(ssh, seq)) != 0 ||
 	    (r = sshpkt_send(ssh)) != 0 ||
 	    (r = ssh_packet_write_wait(ssh)) != 0)
-		sshpkt_fatal(ssh, __func__, r);
+		sshpkt_fatal(ssh, r, "%s", __func__);
 	return 0;
 }
 
 int
-dispatch_protocol_ignore(int type, u_int32_t seq, struct ssh *ssh)
+dispatch_protocol_ignore(int type, uint32_t seq, struct ssh *ssh)
 {
-	logit("dispatch_protocol_ignore: type %d seq %u", type, seq);
+	logit_f("type %d seq %u", type, seq);
 	return 0;
 }
 
@@ -89,7 +88,7 @@ ssh_dispatch_run(struct ssh *ssh, int mode, volatile sig_atomic_t *done)
 {
 	int r;
 	u_char type;
-	u_int32_t seqnr;
+	uint32_t seqnr;
 
 	for (;;) {
 		if (mode == DISPATCH_BLOCK) {
@@ -131,5 +130,5 @@ ssh_dispatch_run_fatal(struct ssh *ssh, int mode, volatile sig_atomic_t *done)
 	int r;
 
 	if ((r = ssh_dispatch_run(ssh, mode, done)) != 0)
-		sshpkt_fatal(ssh, __func__, r);
+		sshpkt_fatal(ssh, r, "%s", __func__);
 }

@@ -1,4 +1,4 @@
-/* $OpenBSD: canohost.c,v 1.73 2016/03/07 19:02:43 djm Exp $ */
+/* $OpenBSD: canohost.c,v 1.78 2026/02/14 00:18:34 jsg Exp $ */
 /*
  * Author: Tatu Ylonen <ylo@cs.hut.fi>
  * Copyright (c) 1995 Tatu Ylonen <ylo@cs.hut.fi>, Espoo, Finland
@@ -30,7 +30,6 @@
 #include <unistd.h>
 
 #include "xmalloc.h"
-#include "packet.h"
 #include "log.h"
 #include "canohost.h"
 #include "misc.h"
@@ -41,7 +40,7 @@ ipv64_normalise_mapped(struct sockaddr_storage *addr, socklen_t *len)
 	struct sockaddr_in6 *a6 = (struct sockaddr_in6 *)addr;
 	struct sockaddr_in *a4 = (struct sockaddr_in *)addr;
 	struct in_addr inaddr;
-	u_int16_t port;
+	uint16_t port;
 
 	if (addr->ss_family != AF_INET6 ||
 	    !IN6_IS_ADDR_V4MAPPED(&a6->sin6_addr))
@@ -72,6 +71,9 @@ get_socket_address(int sock, int remote, int flags)
 	char ntop[NI_MAXHOST];
 	int r;
 
+	if (sock < 0)
+		return NULL;
+
 	/* Get IP address of client. */
 	addrlen = sizeof(addr);
 	memset(&addr, 0, sizeof(addr));
@@ -96,7 +98,7 @@ get_socket_address(int sock, int remote, int flags)
 		/* Get the address in ascii. */
 		if ((r = getnameinfo((struct sockaddr *)&addr, addrlen, ntop,
 		    sizeof(ntop), NULL, 0, flags)) != 0) {
-			error("%s: getnameinfo %d failed: %s", __func__,
+			error_f("getnameinfo %d failed: %s",
 			    flags, ssh_gai_strerror(r));
 			return NULL;
 		}
@@ -141,7 +143,7 @@ get_local_name(int fd)
 
 	/* Handle the case where we were passed a pipe */
 	if (gethostname(myname, sizeof(myname)) == -1) {
-		verbose("%s: gethostname: %s", __func__, strerror(errno));
+		verbose_f("gethostname: %s", strerror(errno));
 		host = xstrdup("UNKNOWN");
 	} else {
 		host = xstrdup(myname);
@@ -160,16 +162,18 @@ get_sock_port(int sock, int local)
 	char strport[NI_MAXSERV];
 	int r;
 
+	if (sock < 0)
+		return -1;
 	/* Get IP address of client. */
 	fromlen = sizeof(from);
 	memset(&from, 0, sizeof(from));
 	if (local) {
-		if (getsockname(sock, (struct sockaddr *)&from, &fromlen) < 0) {
+		if (getsockname(sock, (struct sockaddr *)&from, &fromlen) == -1) {
 			error("getsockname failed: %.100s", strerror(errno));
 			return 0;
 		}
 	} else {
-		if (getpeername(sock, (struct sockaddr *)&from, &fromlen) < 0) {
+		if (getpeername(sock, (struct sockaddr *)&from, &fromlen) == -1) {
 			debug("getpeername failed: %.100s", strerror(errno));
 			return -1;
 		}
@@ -186,7 +190,7 @@ get_sock_port(int sock, int local)
 	/* Return port number. */
 	if ((r = getnameinfo((struct sockaddr *)&from, fromlen, NULL, 0,
 	    strport, sizeof(strport), NI_NUMERICSERV)) != 0)
-		fatal("%s: getnameinfo NI_NUMERICSERV failed: %s", __func__,
+		fatal_f("getnameinfo NI_NUMERICSERV failed: %s",
 		    ssh_gai_strerror(r));
 	return atoi(strport);
 }

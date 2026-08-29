@@ -1,4 +1,4 @@
-/* $OpenBSD: netcat.c,v 1.126 2014/10/30 16:08:31 tedu Exp $ */
+/* $OpenBSD: netcat.c,v 1.131 2015/09/03 23:06:28 sobrado Exp $ */
 /*
  * Copyright (c) 2001 Eric Jackson <ericj@monkey.org>
  *
@@ -44,26 +44,27 @@
 #include <netinet/ip.h>
 
 #include <errno.h>
+#include <fcntl.h>
+#include <limits.h>
 #include <netdb.h>
+#include <signal.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <fcntl.h>
-#include <limits.h>
 #include "atomicio.h"
 
-#ifdef HAVE_POLL_H
 #include <poll.h>
-#else
-# ifdef HAVE_SYS_POLL_H
-#  include <sys/poll.h>
-# endif
-#endif
 #ifdef HAVE_ERR_H
 # include <err.h>
 #endif
+#ifdef HAVE_SYS_BYTEORDER_H
+# include <sys/byteorder.h>
+#endif
+
+/* rename to avoid collision in libssh */
+#define timeout_connect netcat_timeout_connect
 
 /* Telnet options from arpa/telnet.h */
 #define IAC	255
@@ -130,7 +131,7 @@ int	udptest(int);
 int	unix_bind(char *);
 int	unix_connect(char *);
 int	unix_listen(char *);
-void	set_common_sockopts(int);
+void	set_common_sockopts(int, int);
 int	map_tos(char *, int *);
 void	report_connect(const struct sockaddr *, socklen_t);
 void	usage(int);
@@ -159,6 +160,8 @@ main(int argc, char *argv[])
 	uport = NULL;
 	sv = NULL;
 
+	signal(SIGPIPE, SIG_IGN);
+
 	while ((ch = getopt(argc, argv,
 	    "46DdFhI:i:klNnO:P:p:rSs:tT:UuV:vw:X:x:z")) != -1) {
 		switch (ch) {
@@ -176,6 +179,8 @@ main(int argc, char *argv[])
 				socksv = -1; /* HTTP proxy CONNECT */
 			else if (strcmp(optarg, "4") == 0)
 				socksv = 4; /* SOCKS v.4 */
+			else if (strcasecmp(optarg, "4A") == 0)
+				socksv = 44; /* SOCKS v.4A */
 			else if (strcmp(optarg, "5") == 0)
 				socksv = 5; /* SOCKS v.5 */
 			else
@@ -645,7 +650,7 @@ remote_connect(const char *host, const char *port, struct addrinfo hints)
 			freeaddrinfo(ares);
 		}
 
-		set_common_sockopts(s);
+		set_common_sockopts(s, res0->ai_family);
 
 		if (timeout_connect(s, res0->ai_addr, res0->ai_addrlen) == 0)
 			break;
@@ -745,7 +750,7 @@ local_listen(char *host, char *port, struct addrinfo hints)
 		if (ret == -1)
 			err(1, "setsockopt SO_REUSEADDR");
 #endif
-		set_common_sockopts(s);
+		set_common_sockopts(s, res0->ai_family);
 
 		if (bind(s, (struct sockaddr *)res0->ai_addr,
 		    res0->ai_addrlen) == 0)
@@ -1031,17 +1036,17 @@ fdpass(int nfd)
 
 	bzero(&pfd, sizeof(pfd));
 	pfd.fd = STDOUT_FILENO;
+	pfd.events = POLLOUT;
 	for (;;) {
 		r = sendmsg(STDOUT_FILENO, &msg, 0);
 		if (r == -1) {
 			if (errno == EAGAIN || errno == EINTR) {
-				pfd.events = POLLOUT;
 				if (poll(&pfd, 1, -1) == -1)
 					err(1, "poll");
 				continue;
 			}
 			err(1, "sendmsg");
-		} else if (r == -1)
+		} else if (r != 1)
 			errx(1, "sendmsg: unexpected return value %zd", r);
 		else
 			break;
@@ -1129,7 +1134,7 @@ build_ports(char *p)
 			char *c;
 
 			for (x = 0; x <= (hi - lo); x++) {
-				y = (arc4random() & 0xFFFF) % (hi - lo);
+				y = arc4random_uniform(hi - lo);
 				c = portlist[x];
 				portlist[x] = portlist[y];
 				portlist[y] = c;
@@ -1165,7 +1170,7 @@ udptest(int s)
 }
 
 void
-set_common_sockopts(int s)
+set_common_sockopts(int s, int af)
 {
 	int x = 1;
 
@@ -1181,11 +1186,22 @@ set_common_sockopts(int s)
 			&x, sizeof(x)) == -1)
 			err(1, "setsockopt");
 	}
+#if defined(IP_TOS) && defined(IPV6_TCLASS)
 	if (Tflag != -1) {
-		if (setsockopt(s, IPPROTO_IP, IP_TOS,
-		    &Tflag, sizeof(Tflag)) == -1)
+		int proto, option;
+
+		if (af == AF_INET6) {
+			proto = IPPROTO_IPV6;
+			option = IPV6_TCLASS;
+		} else {
+			proto = IPPROTO_IP;
+			option = IP_TOS;
+		}
+
+		if (setsockopt(s, proto, option, &Tflag, sizeof(Tflag)) == -1)
 			err(1, "set IP ToS");
 	}
+#endif
 	if (Iflag) {
 		if (setsockopt(s, SOL_SOCKET, SO_RCVBUF,
 		    &Iflag, sizeof(Iflag)) == -1)
@@ -1201,6 +1217,7 @@ set_common_sockopts(int s)
 int
 map_tos(char *s, int *val)
 {
+#ifdef IP_TOS
 	/* DiffServ Codepoints and other TOS mappings */
 	const struct toskeywords {
 		const char	*keyword;
@@ -1242,6 +1259,7 @@ map_tos(char *s, int *val)
 			return (1);
 		}
 	}
+#endif
 
 	return (0);
 }
@@ -1314,7 +1332,7 @@ usage(int ret)
 {
 	fprintf(stderr,
 	    "usage: nc [-46DdFhklNnrStUuvz] [-I length] [-i interval] [-O length]\n"
-	    "\t  [-P proxy_username] [-p source_port] [-s source] [-T ToS]\n"
+	    "\t  [-P proxy_username] [-p source_port] [-s source] [-T toskeyword]\n"
 	    "\t  [-V rtable] [-w timeout] [-X proxy_protocol]\n"
 	    "\t  [-x proxy_address[:port]] [destination] [port]\n");
 	if (ret)
@@ -1564,19 +1582,33 @@ socks_connect(const char *host, const char *port,
 		default:
 			errx(1, "connection failed, unsupported address type");
 		}
-	} else if (socksv == 4) {
-		/* This will exit on lookup failure */
-		decode_addrport(host, port, (struct sockaddr *)&addr,
-		    sizeof(addr), 1, 0);
+	} else if (socksv == 4 || socksv == 44) {
+		if (socksv == 4) {
+			/* This will exit on lookup failure */
+			decode_addrport(host, port, (struct sockaddr *)&addr,
+			    sizeof(addr), 1, 0);
+		}
 
 		/* Version 4 */
 		buf[0] = SOCKS_V4;
 		buf[1] = SOCKS_CONNECT;	/* connect */
 		memcpy(buf + 2, &in4->sin_port, sizeof in4->sin_port);
-		memcpy(buf + 4, &in4->sin_addr, sizeof in4->sin_addr);
+		if (socksv == 4) {
+			memcpy(buf + 4, &in4->sin_addr, sizeof in4->sin_addr);
+		} else {
+			/* SOCKS4A uses addr of 0.0.0.x, and hostname later */
+			buf[4] = buf[5] = buf[6] = 0;
+			buf[7] = 1;
+		}
 		buf[8] = 0;	/* empty username */
 		wlen = 9;
-
+		if (socksv == 44) {
+			/* SOCKS4A has nul-terminated hostname after user */
+			if (strlcpy(buf + 9, host,
+			    sizeof(buf) - 9) >= sizeof(buf) - 9)
+				errx(1, "hostname too big");
+			wlen = 9 + strlen(host) + 1;
+		}
 		cnt = atomicio(vwrite, proxyfd, buf, wlen);
 		if (cnt != wlen)
 			err(1, "write failed (%zu/%zu)", cnt, wlen);

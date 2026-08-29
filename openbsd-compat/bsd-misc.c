@@ -18,13 +18,13 @@
 #include "includes.h"
 
 #include <sys/types.h>
+#include <sys/ioctl.h>
 #ifdef HAVE_SYS_SELECT_H
 # include <sys/select.h>
 #endif
-#ifdef HAVE_SYS_TIME_H
-# include <sys/time.h>
-#endif
+#include <sys/time.h>
 
+#include <fcntl.h>
 #include <string.h>
 #include <signal.h>
 #include <stdlib.h>
@@ -106,7 +106,7 @@ const char *strerror(int e)
 #endif
 
 #ifndef HAVE_UTIMES
-int utimes(char *filename, struct timeval *tvp)
+int utimes(const char *filename, struct timeval *tvp)
 {
 	struct utimbuf ub;
 
@@ -114,6 +114,157 @@ int utimes(char *filename, struct timeval *tvp)
 	ub.modtime = tvp[1].tv_sec;
 
 	return (utime(filename, &ub));
+}
+#endif
+
+#ifndef HAVE_UTIMENSAT
+/*
+ * A limited implementation of utimensat() that only implements the
+ * functionality used by OpenSSH, currently only AT_FDCWD and
+ * AT_SYMLINK_NOFOLLOW.
+ */
+int
+utimensat(int fd, const char *path, const struct timespec times[2],
+    int flag)
+{
+	struct timeval tv[2];
+# ifdef HAVE_FUTIMES
+	int ret, oflags = O_WRONLY;
+# endif
+
+	tv[0].tv_sec = times[0].tv_sec;
+	tv[0].tv_usec = times[0].tv_nsec / 1000;
+	tv[1].tv_sec = times[1].tv_sec;
+	tv[1].tv_usec = times[1].tv_nsec / 1000;
+
+	if (fd != AT_FDCWD) {
+		errno = ENOSYS;
+		return -1;
+	}
+# ifndef HAVE_FUTIMES
+	return utimes(path, tv);
+# else
+#  ifdef O_NOFOLLOW
+	if (flag & AT_SYMLINK_NOFOLLOW)
+		oflags |= O_NOFOLLOW;
+#  endif /* O_NOFOLLOW */
+	if ((fd = open(path, oflags)) == -1)
+		return -1;
+	ret = futimes(fd, tv);
+	close(fd);
+	return ret;
+# endif
+}
+#endif
+
+#ifndef HAVE_DIRFD
+int
+dirfd(void *dir)
+{
+	errno = ENOSYS;
+	return -1;
+}
+#endif
+
+#ifndef HAVE_FCHOWNAT
+/*
+ * A limited implementation of fchownat() that only implements the
+ * functionality used by OpenSSH, currently only AT_FDCWD and
+ * AT_SYMLINK_NOFOLLOW.
+ */
+int
+fchownat(int fd, const char *path, uid_t owner, gid_t group, int flag)
+{
+	int ret, oflags = O_WRONLY;
+
+	if (fd != AT_FDCWD) {
+		errno = ENOSYS;
+		return -1;
+	}
+# ifndef HAVE_FCHOWN
+	return chown(path, owner, group);
+# else
+#  ifdef O_NOFOLLOW
+	if (flag & AT_SYMLINK_NOFOLLOW)
+		oflags |= O_NOFOLLOW;
+#  endif /* O_NOFOLLOW */
+	if ((fd = open(path, oflags)) == -1)
+		return -1;
+	ret = fchown(fd, owner, group);
+	close(fd);
+	return ret;
+# endif
+}
+#endif
+
+#ifndef HAVE_FCHMODAT
+/*
+ * A limited implementation of fchmodat() that only implements the
+ * functionality used by OpenSSH, currently only AT_FDCWD and
+ * AT_SYMLINK_NOFOLLOW.
+ */
+int
+fchmodat(int fd, const char *path, mode_t mode, int flag)
+{
+	int ret, oflags = O_WRONLY;
+
+	if (fd != AT_FDCWD) {
+		errno = ENOSYS;
+		return -1;
+	}
+# ifndef HAVE_FCHMOD
+	return chmod(path, mode);
+# else
+#  ifdef O_NOFOLLOW
+	if (flag & AT_SYMLINK_NOFOLLOW)
+		oflags |= O_NOFOLLOW;
+#  endif /* O_NOFOLLOW */
+	if ((fd = open(path, oflags)) == -1)
+		return -1;
+	ret = fchmod(fd, mode);
+	close(fd);
+	return ret;
+# endif
+}
+#endif
+
+#ifndef HAVE_FSTATAT
+/*
+ * A limited implementation of fstatat that just has what OpenSSH uses:
+ * cwd-relative and absolute paths, with or without following symlinks.
+ */
+int
+fstatat(int dirfd, const char *path, struct stat *sb, int flag)
+{
+	if (dirfd != AT_FDCWD && path && path[0] != '/') {
+		errno = ENOSYS;
+		return -1;
+	}
+	if (flag == 0)
+		return stat(path, sb);
+	else if (flag == AT_SYMLINK_NOFOLLOW)
+		return lstat(path, sb);
+	errno = ENOSYS;
+	return -1;
+}
+#endif
+
+#ifndef HAVE_UNLINKAT
+/*
+ * A limited implementation of unlinkat that just has what OpenSSH uses:
+ * cwd-relative and absolute paths.
+ */
+int
+unlinkat(int dirfd, const char *path, int flag)
+{
+	if (dirfd != AT_FDCWD && path && path[0] != '/') {
+		errno = ENOSYS;
+		return -1;
+	}
+	if (flag == 0)
+		return unlink(path);
+	errno = ENOSYS;
+	return -1;
 }
 #endif
 
@@ -253,7 +404,15 @@ getpgid(pid_t pid)
 
 #ifndef HAVE_PLEDGE
 int
-pledge(const char *promises, const char *paths[])
+pledge(const char *promises, const char *execpromises)
+{
+	return 0;
+}
+#endif
+
+#ifndef HAVE_UNVEIL
+int
+unveil(const char *path, const char *permissions)
 {
 	return 0;
 }
@@ -296,7 +455,7 @@ bzero(void *b, size_t n)
 int
 raise(int sig)
 {
-	kill(getpid(), sig);
+	return kill(getpid(), sig);
 }
 #endif
 
@@ -309,19 +468,73 @@ getsid(pid_t pid)
 }
 #endif
 
+#ifndef HAVE_KILLPG
+int
+killpg(pid_t pgrp, int sig)
+{
+	return kill(pgrp, sig);
+}
+#endif
+
 #ifdef FFLUSH_NULL_BUG
 #undef fflush
 int _ssh_compat_fflush(FILE *f)
 {
-	int r1, r2, r3;
+	int r1, r2;
 
 	if (f == NULL) {
-		r2 = fflush(stdout);
-		r3 = fflush(stderr);
-		if (r1 == -1 || r2 == -1 || r3 == -1)
+		r1 = fflush(stdout);
+		r2 = fflush(stderr);
+		if (r1 == -1 || r2 == -1)
 			return -1;
 		return 0;
 	}
 	return fflush(f);
+}
+#endif
+
+#ifndef HAVE_LOCALTIME_R
+struct tm *
+localtime_r(const time_t *timep, struct tm *result)
+{
+	struct tm *tm = localtime(timep);
+	*result = *tm;
+	return result;
+}
+#endif
+
+#ifndef HAVE_CLOCK_GETTIME
+int
+clock_gettime(clockid_t clockid, struct timespec *ts)
+{
+	struct timeval tv;
+
+	if (clockid != CLOCK_REALTIME) {
+		errno = ENOSYS;
+		return -1;
+	}
+	if (ts == NULL) {
+		errno = EFAULT;
+		return -1;
+	}
+
+	if (gettimeofday(&tv, NULL) == -1)
+		return -1;
+
+	ts->tv_sec = tv.tv_sec;
+	ts->tv_nsec = (long)tv.tv_usec * 1000;
+	return 0;
+}
+#endif
+
+#ifdef ASAN_OPTIONS
+const char *__asan_default_options(void) {
+	return ASAN_OPTIONS;
+}
+#endif
+
+#ifdef MSAN_OPTIONS
+const char *__msan_default_options(void) {
+	return MSAN_OPTIONS;
 }
 #endif

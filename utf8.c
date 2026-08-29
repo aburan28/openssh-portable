@@ -1,4 +1,4 @@
-/* $OpenBSD: utf8.c,v 1.8 2018/08/21 13:56:27 schwarze Exp $ */
+/* $OpenBSD: utf8.c,v 1.11 2020/05/01 06:28:52 djm Exp $ */
 /*
  * Copyright (c) 2016 Ingo Schwarze <schwarze@openbsd.org>
  *
@@ -43,7 +43,6 @@
 
 static int	 dangerous_locale(void);
 static int	 grow_dst(char **, size_t *, size_t, char **, size_t);
-static int	 vasnmprintf(char **, size_t, int *, const char *, va_list);
 
 
 /*
@@ -101,7 +100,7 @@ grow_dst(char **dst, size_t *sz, size_t maxsz, char **dp, size_t need)
  * written is returned in *wp.
  */
 
-static int
+int
 vasnmprintf(char **str, size_t maxsz, int *wp, const char *fmt, va_list ap)
 {
 	char	*src;	/* Source string returned from vasprintf. */
@@ -241,7 +240,7 @@ int
 snmprintf(char *str, size_t sz, int *wp, const char *fmt, ...)
 {
 	va_list	 ap;
-	char	*cp;
+	char	*cp = NULL;
 	int	 ret;
 
 	va_start(ap, fmt);
@@ -255,6 +254,20 @@ snmprintf(char *str, size_t sz, int *wp, const char *fmt, ...)
 	return ret;
 }
 
+int
+asmprintf(char **outp, size_t sz, int *wp, const char *fmt, ...)
+{
+	va_list	 ap;
+	int	 ret;
+
+	*outp = NULL;
+	va_start(ap, fmt);
+	ret = vasnmprintf(outp, sz, wp, fmt, ap);
+	va_end(ap);
+
+	return ret;
+}
+
 /*
  * To stay close to the standard interfaces, the following functions
  * return the number of non-NUL bytes written.
@@ -263,11 +276,13 @@ snmprintf(char *str, size_t sz, int *wp, const char *fmt, ...)
 int
 vfmprintf(FILE *stream, const char *fmt, va_list ap)
 {
-	char	*str;
+	char	*str = NULL;
 	int	 ret;
 
-	if ((ret = vasnmprintf(&str, INT_MAX, NULL, fmt, ap)) < 0)
+	if ((ret = vasnmprintf(&str, INT_MAX, NULL, fmt, ap)) < 0) {
+		free(str);
 		return -1;
+	}
 	if (fputs(str, stream) == EOF)
 		ret = -1;
 	free(str);
@@ -301,11 +316,12 @@ mprintf(const char *fmt, ...)
 /*
  * Set up libc for multibyte output in the user's chosen locale.
  *
- * XXX: we are known to have problems with Turkish (i/I confusion) so we
- *      deliberately fall back to the C locale for now. Longer term we should
- *      always prefer to select C.[encoding] if possible, but there's no
- *      standardisation in locales between systems, so we'll need to survey
+ * XXX: we are known to have problems with Turkic languahes (i/I confusion) so
+ *      we deliberately fall back to the C locale for now. Longer term we
+ *      should always prefer to select C.[encoding] if possible, but there's
+ *      no standardisation in locales between systems, so we'll need to survey
  *      what's out there first.
+ * XXX: alternately runtime probe that toupper('i') != 'I' and vice-versa?
  */
 void
 msetlocale(void)
@@ -315,13 +331,15 @@ msetlocale(void)
 	int i;
 
 	/*
-	 * We can't yet cope with dotless/dotted I in Turkish locales,
+	 * We can't yet cope with dotless/dotted I in Turkic locales,
 	 * so fall back to the C locale for these.
 	 */
 	for (i = 0; vars[i] != NULL; i++) {
 		if ((cp = getenv(vars[i])) == NULL)
 			continue;
-		if (strncasecmp(cp, "TR", 2) != 0)
+		if (strncasecmp(cp, "tr", 2) != 0 &&
+		    strncasecmp(cp, "crh", 3) != 0 &&
+		    strncasecmp(cp, "az", 3) != 0)
 			break;
 		/*
 		 * If we're in a UTF-8 locale then prefer to use

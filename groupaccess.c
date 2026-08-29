@@ -1,4 +1,4 @@
-/* $OpenBSD: groupaccess.c,v 1.16 2015/05/04 06:10:48 djm Exp $ */
+/* $OpenBSD: groupaccess.c,v 1.18 2024/11/04 21:59:15 jca Exp $ */
 /*
  * Copyright (c) 2001 Kevin Steves.  All rights reserved.
  *
@@ -50,22 +50,37 @@ int
 ga_init(const char *user, gid_t base)
 {
 	gid_t *groups_bygid;
-	int i, j;
+	int ongroups, i, j, retry = 0;
 	struct group *gr;
 
 	if (ngroups > 0)
 		ga_free();
 
-	ngroups = NGROUPS_MAX;
+	ongroups = ngroups = NGROUPS_MAX;
 #if defined(HAVE_SYSCONF) && defined(_SC_NGROUPS_MAX)
-	ngroups = MAX(NGROUPS_MAX, sysconf(_SC_NGROUPS_MAX));
+	ongroups = ngroups = MAX(NGROUPS_MAX, sysconf(_SC_NGROUPS_MAX));
 #endif
 
 	groups_bygid = xcalloc(ngroups, sizeof(*groups_bygid));
+	while (getgrouplist(user, base, groups_bygid, &ngroups) == -1) {
+		if (ngroups <= ongroups) {
+			error("getgrouplist(\"%s\", %ld): failed",
+			    user, (long)base);
+			free(groups_bygid);
+			groups_bygid = NULL;
+			ngroups = 0;
+			return 0;
+		}
+		if (retry++ > 0) {
+			fatal("getgrouplist(\"%s\", %ld): groups list too big "
+			    "(have %ld, need %ld)", user, (long)base,
+			    (long)ongroups, (long)ngroups);
+		}
+		groups_bygid = xreallocarray(groups_bygid, ngroups,
+		    sizeof(*groups_bygid));
+	}
 	groups_byname = xcalloc(ngroups, sizeof(*groups_byname));
 
-	if (getgrouplist(user, base, groups_bygid, &ngroups) == -1)
-		logit("getgrouplist: groups list too small");
 	for (i = 0, j = 0; i < ngroups; i++)
 		if ((gr = getgrgid(groups_bygid[i])) != NULL)
 			groups_byname[j++] = xstrdup(gr->gr_name);
@@ -99,7 +114,8 @@ ga_match_pattern_list(const char *group_pattern)
 	int i, found = 0;
 
 	for (i = 0; i < ngroups; i++) {
-		switch (match_pattern_list(groups_byname[i], group_pattern, 0)) {
+		switch (match_usergroup_pattern_list(groups_byname[i],
+		    group_pattern)) {
 		case -1:
 			return 0;	/* Negated match wins */
 		case 0:
@@ -124,5 +140,6 @@ ga_free(void)
 			free(groups_byname[i]);
 		ngroups = 0;
 		free(groups_byname);
+		groups_byname = NULL;
 	}
 }

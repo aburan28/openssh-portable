@@ -1,4 +1,4 @@
-/* $OpenBSD: sshconnect.h,v 1.35 2018/07/19 10:28:47 dtucker Exp $ */
+/* $OpenBSD: sshconnect.h,v 1.52 2026/08/03 06:47:24 djm Exp $ */
 
 /*
  * Copyright (c) 2000 Markus Friedl.  All rights reserved.
@@ -24,36 +24,85 @@
  * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+struct sshkey;
+
 typedef struct Sensitive Sensitive;
 struct Sensitive {
 	struct sshkey	**keys;
 	int		nkeys;
 };
 
+struct ssh_conn_info {
+	char *conn_hash_hex;
+	char *shorthost;
+	char *uidstr;
+	char *keyalias;
+	char *thishost;
+	char *host_arg;
+	char *portstr;
+	char *remhost;
+	char *remuser;
+	char *homedir;
+	char *locuser;
+	char *jmphost;
+};
+
 struct addrinfo;
 struct ssh;
+struct hostkeys;
 
-int	 ssh_connect(struct ssh *, const char *, struct addrinfo *,
-	    struct sockaddr_storage *, u_short, int, int, int *, int);
+/* default argument for client percent expansions, minus remote user */
+#define DEFAULT_CLIENT_PERCENT_EXPAND_ARGS_NOUSER(conn_info) \
+	"L", conn_info->shorthost, \
+	"i", conn_info->uidstr, \
+	"k", conn_info->keyalias, \
+	"l", conn_info->thishost, \
+	"n", conn_info->host_arg, \
+	"p", conn_info->portstr, \
+	"d", conn_info->homedir, \
+	"h", conn_info->remhost, \
+	"u", conn_info->locuser, \
+	"j", conn_info->jmphost
+
+/* same plus remote user and hash which has user as a component */
+#define DEFAULT_CLIENT_PERCENT_EXPAND_ARGS(conn_info) \
+	DEFAULT_CLIENT_PERCENT_EXPAND_ARGS_NOUSER(conn_info), \
+	"C", conn_info->conn_hash_hex, \
+	"r", conn_info->remuser
+
+int	 ssh_connect(struct ssh *, const char *, const char *,
+	    struct addrinfo *, struct sockaddr_storage *, u_short,
+	    int, int *, int);
 void	 ssh_kill_proxy_command(void);
 
-void	 ssh_login(Sensitive *, const char *, struct sockaddr *, u_short,
-    struct passwd *, int);
+void	 ssh_login(struct ssh *, Sensitive *, const char *,
+    struct sockaddr_storage *, u_short, struct passwd *, int,
+    const struct ssh_conn_info *);
 
-void	 ssh_exchange_identification(int);
-
-int	 verify_host_key(char *, struct sockaddr *, struct sshkey *);
+int	 verify_host_key(char *, struct sockaddr *, struct sshkey *,
+    const struct ssh_conn_info *);
 
 void	 get_hostfile_hostname_ipaddr(char *, struct sockaddr *, u_short,
     char **, char **);
 
-void	 ssh_kex(char *, struct sockaddr *);
-void	 ssh_kex2(char *, struct sockaddr *, u_short);
+void	 ssh_kex2(struct ssh *ssh, char *, struct sockaddr_storage *, u_short,
+    const struct ssh_conn_info *);
 
-void	 ssh_userauth1(const char *, const char *, char *, Sensitive *);
-void	 ssh_userauth2(const char *, const char *, char *, Sensitive *);
+void	 ssh_userauth2(struct ssh *ssh, const char *, const char *,
+    char *, Sensitive *);
 
-void	 ssh_put_password(char *);
+void	 pubkey_dump(struct ssh *);
+
 int	 ssh_local_cmd(const char *);
 
-void	 maybe_add_key_to_agent(char *, const struct sshkey *, char *, char *);
+void	 maybe_add_key_to_agent(const char *, struct sshkey *,
+    const char *, const char *);
+
+void	 load_hostkeys_command(struct hostkeys *, const char *,
+    const char *, const struct ssh_conn_info *,
+    const struct sshkey *, const char *);
+
+int hostkey_accepted_by_hostkeyalgs(const struct sshkey *);
+
+void ssh_conn_info_free(struct ssh_conn_info *);
+struct ssh_conn_info *ssh_conn_info_dup(const struct ssh_conn_info *);

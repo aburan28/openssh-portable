@@ -1,4 +1,4 @@
-/* 	$OpenBSD: test_sshbuf_getput_fuzz.c,v 1.2 2014/05/02 02:54:00 djm Exp $ */
+/* 	$OpenBSD: test_sshbuf_getput_fuzz.c,v 1.7 2026/03/06 06:57:33 dtucker Exp $ */
 /*
  * Regress test for sshbuf.h buffer API
  *
@@ -8,18 +8,15 @@
 #include "includes.h"
 
 #include <sys/types.h>
-#include <sys/param.h>
 #include <stdio.h>
-#ifdef HAVE_STDINT_H
-# include <stdint.h>
-#endif
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef WITH_OPENSSL
 #include <openssl/bn.h>
 #include <openssl/objects.h>
-#ifdef OPENSSL_HAS_NISTP256
-# include <openssl/ec.h>
+#include <openssl/ec.h>
 #endif
 
 #include "../test_helper/test_helper.h"
@@ -32,40 +29,37 @@ static void
 attempt_parse_blob(u_char *blob, size_t len)
 {
 	struct sshbuf *p1;
+#ifdef WITH_OPENSSL
 	BIGNUM *bn;
-#if defined(OPENSSL_HAS_ECC) && defined(OPENSSL_HAS_NISTP256)
 	EC_KEY *eck;
-#endif
+#endif /* WITH_OPENSSL */
 	u_char *s;
 	size_t l;
-	u_int8_t u8;
-	u_int16_t u16;
-	u_int32_t u32;
-	u_int64_t u64;
+	uint8_t u8;
+	uint16_t u16;
+	uint32_t u32;
+	uint64_t u64;
 
 	p1 = sshbuf_new();
 	ASSERT_PTR_NE(p1, NULL);
 	ASSERT_INT_EQ(sshbuf_put(p1, blob, len), 0);
-	sshbuf_get_u8(p1, &u8);
-	sshbuf_get_u16(p1, &u16);
-	sshbuf_get_u32(p1, &u32);
-	sshbuf_get_u64(p1, &u64);
+	ASSERT_INT_EQ(sshbuf_get_u8(p1, &u8), 0);
+	ASSERT_INT_EQ(sshbuf_get_u16(p1, &u16), 0);
+	ASSERT_INT_EQ(sshbuf_get_u32(p1, &u32), 0);
+	ASSERT_INT_EQ(sshbuf_get_u64(p1, &u64), 0);
 	if (sshbuf_get_string(p1, &s, &l) == 0) {
 		bzero(s, l);
 		free(s);
 	}
-	bn = BN_new();
-	sshbuf_get_bignum1(p1, bn);
+#ifdef WITH_OPENSSL
+	bn = NULL;
+	ASSERT_INT_EQ(sshbuf_get_bignum2(p1, &bn), 0);
 	BN_clear_free(bn);
-	bn = BN_new();
-	sshbuf_get_bignum2(p1, bn);
-	BN_clear_free(bn);
-#if defined(OPENSSL_HAS_ECC) && defined(OPENSSL_HAS_NISTP256)
 	eck = EC_KEY_new_by_curve_name(NID_X9_62_prime256v1);
 	ASSERT_PTR_NE(eck, NULL);
-	sshbuf_get_eckey(p1, eck);
+	ASSERT_INT_EQ(sshbuf_get_eckey(p1, eck), 0);
 	EC_KEY_free(eck);
-#endif
+#endif /* WITH_OPENSSL */
 	sshbuf_free(p1);
 }
 
@@ -92,10 +86,6 @@ sshbuf_getput_fuzz_tests(void)
 		/* string */
 		0x00, 0x00, 0x00, 0x09,
 		'O', ' ', 'G', 'o', 'r', 'g', 'o', 'n', '!',
-		/* bignum1 */
-		0x79,
-		0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
-		0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10,
 		/* bignum2 */
 		0x00, 0x00, 0x00, 0x14,
 		0x00,
@@ -115,11 +105,15 @@ sshbuf_getput_fuzz_tests(void)
 		0x55, 0x0f, 0x69, 0xd8, 0x0e, 0xc2, 0x3c, 0xd4,
 	};
 	struct fuzz *fuzz;
+	u_int fuzzers = FUZZ_1_BIT_FLIP | FUZZ_2_BIT_FLIP |
+	    FUZZ_1_BYTE_FLIP | FUZZ_2_BYTE_FLIP |
+	    FUZZ_TRUNCATE_START | FUZZ_TRUNCATE_END;
+
+	if (test_is_fast())
+		fuzzers &= ~(FUZZ_2_BYTE_FLIP|FUZZ_2_BIT_FLIP);
 
 	TEST_START("fuzz blob parsing");
-	fuzz = fuzz_begin(FUZZ_1_BIT_FLIP | FUZZ_2_BIT_FLIP |
-	    FUZZ_1_BYTE_FLIP | FUZZ_2_BYTE_FLIP |
-	    FUZZ_TRUNCATE_START | FUZZ_TRUNCATE_END, blob, sizeof(blob));
+	fuzz = fuzz_begin(fuzzers, blob, sizeof(blob));
 	TEST_ONERROR(onerror, fuzz);
 	for(; !fuzz_done(fuzz); fuzz_next(fuzz))
 		attempt_parse_blob(blob, sizeof(blob));

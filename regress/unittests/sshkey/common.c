@@ -1,4 +1,4 @@
-/* 	$OpenBSD: common.c,v 1.2 2015/01/08 13:10:58 djm Exp $ */
+/* 	$OpenBSD: common.c,v 1.8 2025/06/16 08:49:27 dtucker Exp $ */
 /*
  * Helpers for key API tests
  *
@@ -8,24 +8,22 @@
 #include "includes.h"
 
 #include <sys/types.h>
-#include <sys/param.h>
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <stdio.h>
-#ifdef HAVE_STDINT_H
 #include <stdint.h>
-#endif
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
+#ifdef WITH_OPENSSL
 #include <openssl/bn.h>
+#include <openssl/ec.h>
 #include <openssl/rsa.h>
-#include <openssl/dsa.h>
 #include <openssl/objects.h>
-#ifdef OPENSSL_HAS_NISTP256
-# include <openssl/ec.h>
-#endif
+#endif /* WITH_OPENSSL */
+
+#include "openbsd-compat/openssl-compat.h"
 
 #include "../test_helper/test_helper.h"
 
@@ -39,13 +37,10 @@
 struct sshbuf *
 load_file(const char *name)
 {
-	int fd;
-	struct sshbuf *ret;
+	struct sshbuf *ret = NULL;
 
-	ASSERT_PTR_NE(ret = sshbuf_new(), NULL);
-	ASSERT_INT_NE(fd = open(test_data_file(name), O_RDONLY), -1);
-	ASSERT_INT_EQ(sshkey_load_file(fd, ret), 0);
-	close(fd);
+	ASSERT_INT_EQ(sshbuf_load_file(test_data_file(name), &ret), 0);
+	ASSERT_PTR_NE(ret, NULL);
 	return ret;
 }
 
@@ -54,13 +49,13 @@ load_text_file(const char *name)
 {
 	struct sshbuf *ret = load_file(name);
 	const u_char *p;
+	size_t len;
 
 	/* Trim whitespace at EOL */
-	for (p = sshbuf_ptr(ret); sshbuf_len(ret) > 0;) {
-		if (p[sshbuf_len(ret) - 1] == '\r' ||
-		    p[sshbuf_len(ret) - 1] == '\t' ||
-		    p[sshbuf_len(ret) - 1] == ' ' ||
-		    p[sshbuf_len(ret) - 1] == '\n')
+	for (p = sshbuf_ptr(ret); (len = sshbuf_len(ret)) > 0;) {
+		len--;
+		if (p[len] == '\r' || p[len] == '\t' ||
+		    p[len] == ' ' || p[len] == '\n')
 			ASSERT_INT_EQ(sshbuf_consume_end(ret, 1), 0);
 		else
 			break;
@@ -70,6 +65,7 @@ load_text_file(const char *name)
 	return ret;
 }
 
+#ifdef WITH_OPENSSL
 BIGNUM *
 load_bignum(const char *name)
 {
@@ -82,3 +78,47 @@ load_bignum(const char *name)
 	return ret;
 }
 
+const BIGNUM *
+rsa_n(struct sshkey *k)
+{
+	const BIGNUM *n = NULL;
+
+	ASSERT_PTR_NE(k, NULL);
+	ASSERT_PTR_NE(k->pkey, NULL);
+	RSA_get0_key(EVP_PKEY_get0_RSA(k->pkey), &n, NULL, NULL);
+	return n;
+}
+
+const BIGNUM *
+rsa_e(struct sshkey *k)
+{
+	const BIGNUM *e = NULL;
+
+	ASSERT_PTR_NE(k, NULL);
+	ASSERT_PTR_NE(k->pkey, NULL);
+	RSA_get0_key(EVP_PKEY_get0_RSA(k->pkey), NULL, &e, NULL);
+	return e;
+}
+
+const BIGNUM *
+rsa_p(struct sshkey *k)
+{
+	const BIGNUM *p = NULL;
+
+	ASSERT_PTR_NE(k, NULL);
+	ASSERT_PTR_NE(EVP_PKEY_get0_RSA(k->pkey), NULL);
+	RSA_get0_factors(EVP_PKEY_get0_RSA(k->pkey), &p, NULL);
+	return p;
+}
+
+const BIGNUM *
+rsa_q(struct sshkey *k)
+{
+	const BIGNUM *q = NULL;
+
+	ASSERT_PTR_NE(k, NULL);
+	ASSERT_PTR_NE(EVP_PKEY_get0_RSA(k->pkey), NULL);
+	RSA_get0_factors(EVP_PKEY_get0_RSA(k->pkey), NULL, &q);
+	return q;
+}
+#endif /* WITH_OPENSSL */

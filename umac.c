@@ -1,4 +1,4 @@
-/* $OpenBSD: umac.c,v 1.17 2018/04/10 00:10:49 djm Exp $ */
+/* $OpenBSD: umac.c,v 1.30 2026/03/03 09:57:26 dtucker Exp $ */
 /* -----------------------------------------------------------------------
  *
  * umac.c -- C Implementation UMAC Message Authentication
@@ -6,7 +6,7 @@
  * Version 0.93b of rfc4418.txt -- 2006 July 18
  *
  * For a full description of UMAC message authentication see the UMAC
- * world-wide-web page at http://www.cs.ucdavis.edu/~rogaway/umac
+ * world-wide-web page at https://fastcrypto.org/umac/
  * Please report bugs and suggestions to the UMAC webpage.
  *
  * Copyright (c) 1999-2006 Ted Krovetz
@@ -39,8 +39,8 @@
   * at http://www.esat.kuleuven.ac.be/~rijmen/rijndael/ (search for
   * "Barreto"). The only two files needed are rijndael-alg-fst.c and
   * rijndael-alg-fst.h. Brian Gladman's version is distributed with the GNU
-  * Public lisence at http://fp.gladman.plus.com/AES/index.htm. It
-  * includes a fast IA-32 assembly version. The OpenSSL crypo library is
+  * Public license at http://fp.gladman.plus.com/AES/index.htm. It
+  * includes a fast IA-32 assembly version. The OpenSSL crypto library is
   * the third.
   *
   * 5) With FORCE_C_ONLY flags set to 0, incorrect results are sometimes
@@ -53,7 +53,7 @@
 /* ---------------------------------------------------------------------- */
 
 #ifndef UMAC_OUTPUT_LEN
-#define UMAC_OUTPUT_LEN     8  /* Alowable: 4, 8, 12, 16                  */
+#define UMAC_OUTPUT_LEN     8  /* Allowable: 4, 8, 12, 16                  */
 #endif
 
 #if UMAC_OUTPUT_LEN != 4 && UMAC_OUTPUT_LEN != 8 && \
@@ -72,9 +72,12 @@
 /* ---------------------------------------------------------------------- */
 
 #include "includes.h"
+
 #include <sys/types.h>
+#include <endian.h>
 #include <string.h>
-#include <stdio.h>
+#include <stdarg.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <stddef.h>
 
@@ -87,10 +90,10 @@
 /* ---------------------------------------------------------------------- */
 
 /* The following assumptions may need change on your system */
-typedef u_int8_t	UINT8;  /* 1 byte   */
-typedef u_int16_t	UINT16; /* 2 byte   */
-typedef u_int32_t	UINT32; /* 4 byte   */
-typedef u_int64_t	UINT64; /* 8 bytes  */
+typedef uint8_t	UINT8;  /* 1 byte   */
+typedef uint16_t	UINT16; /* 2 byte   */
+typedef uint32_t	UINT32; /* 4 byte   */
+typedef uint64_t	UINT64; /* 8 bytes  */
 typedef unsigned int	UWORD;  /* Register */
 
 /* ---------------------------------------------------------------------- */
@@ -232,7 +235,8 @@ static void pdf_init(pdf_ctx *pc, aes_int_key prf_key)
     explicit_bzero(buf, sizeof(buf));
 }
 
-static void pdf_gen_xor(pdf_ctx *pc, const UINT8 nonce[8], UINT8 buf[8])
+static void pdf_gen_xor(pdf_ctx *pc, const UINT8 nonce[8],
+    UINT8 buf[UMAC_OUTPUT_LEN])
 {
     /* 'ndx' indicates that we'll be using the 0th or 1st eight bytes
      * of the AES output. If last time around we returned the ndx-1st
@@ -289,7 +293,7 @@ static void pdf_gen_xor(pdf_ctx *pc, const UINT8 nonce[8], UINT8 buf[8])
  * versions, one expects the entire message being hashed to be passed
  * in a single buffer and returns the hash result immediately. The second
  * allows the message to be passed in a sequence of buffers. In the
- * muliple-buffer interface, the client calls the routine nh_update() as
+ * multiple-buffer interface, the client calls the routine nh_update() as
  * many times as necessary. When there is no more data to be fed to the
  * hash, the client calls nh_final() which calculates the hash output.
  * Before beginning another hash calculation the nh_reset() routine
@@ -1087,7 +1091,7 @@ static int uhash_update(uhash_ctx_t ctx, const u_char *input, long len)
          }
 
          /* pass remaining < L1_KEY_LEN bytes of input data to NH */
-         if (len) {
+         if (len > 0 && (unsigned long)len <= UINT32_MAX) {
              nh_update(&ctx->hash, (const UINT8 *)input, len);
              ctx->msg_len += len;
          }
@@ -1176,7 +1180,7 @@ static int uhash(uhash_ctx_t ahc, u_char *msg, long len, u_char *res)
 /* The UMAC interface has two interfaces, an all-at-once interface where
  * the entire message to be authenticated is passed to UMAC in one buffer,
  * and a sequential interface where the message is presented a little at a
- * time. The all-at-once is more optimaized than the sequential version and
+ * time. The all-at-once is more optimized than the sequential version and
  * should be preferred when the sequential interface is not required.
  */
 struct umac_ctx {
@@ -1204,8 +1208,7 @@ int umac_delete(struct umac_ctx *ctx)
     if (ctx) {
         if (ALLOC_BOUNDARY)
             ctx = (struct umac_ctx *)ctx->free_ptr;
-        explicit_bzero(ctx, sizeof(*ctx) + ALLOC_BOUNDARY);
-        free(ctx);
+        freezero(ctx, sizeof(*ctx) + ALLOC_BOUNDARY);
     }
     return (1);
 }

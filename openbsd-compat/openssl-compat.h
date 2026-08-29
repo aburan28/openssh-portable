@@ -21,80 +21,81 @@
 #ifdef WITH_OPENSSL
 
 #include <openssl/opensslv.h>
+#include <openssl/crypto.h>
 #include <openssl/evp.h>
+#include <openssl/bn.h>
 #include <openssl/rsa.h>
-#include <openssl/dsa.h>
+#include <openssl/ecdsa.h>
+#include <openssl/dh.h>
 
 int ssh_compatible_openssl(long, long);
+int ssh_libcrypto_init(void);
 
-#if (OPENSSL_VERSION_NUMBER <= 0x0090805fL)
-# error OpenSSL 0.9.8f or greater is required
+#if (OPENSSL_VERSION_NUMBER < 0x10100000L)
+# error OpenSSL 1.1.0 or greater is required
 #endif
-
-#if OPENSSL_VERSION_NUMBER < 0x10000001L
-# define LIBCRYPTO_EVP_INL_TYPE unsigned int
-#else
-# define LIBCRYPTO_EVP_INL_TYPE size_t
+#ifdef LIBRESSL_VERSION_NUMBER
+# if LIBRESSL_VERSION_NUMBER < 0x3010000fL
+#  error LibreSSL 3.1.0 or greater is required
+# endif
 #endif
 
 #ifndef OPENSSL_RSA_MAX_MODULUS_BITS
 # define OPENSSL_RSA_MAX_MODULUS_BITS	16384
 #endif
-#ifndef OPENSSL_DSA_MAX_MODULUS_BITS
-# define OPENSSL_DSA_MAX_MODULUS_BITS	10000
-#endif
 
-#ifndef OPENSSL_HAVE_EVPCTR
-# define EVP_aes_128_ctr evp_aes_128_ctr
-# define EVP_aes_192_ctr evp_aes_128_ctr
-# define EVP_aes_256_ctr evp_aes_128_ctr
-const EVP_CIPHER *evp_aes_128_ctr(void);
-void ssh_aes_ctr_iv(EVP_CIPHER_CTX *, int, u_char *, size_t);
-#endif
-
-/* Avoid some #ifdef. Code that uses these is unreachable without GCM */
-#if !defined(OPENSSL_HAVE_EVPGCM) && !defined(EVP_CTRL_GCM_SET_IV_FIXED)
-# define EVP_CTRL_GCM_SET_IV_FIXED -1
-# define EVP_CTRL_GCM_IV_GEN -1
-# define EVP_CTRL_GCM_SET_TAG -1
-# define EVP_CTRL_GCM_GET_TAG -1
-#endif
-
-/* Replace missing EVP_CIPHER_CTX_ctrl() with something that returns failure */
-#ifndef HAVE_EVP_CIPHER_CTX_CTRL
-# ifdef OPENSSL_HAVE_EVPGCM
-#  error AES-GCM enabled without EVP_CIPHER_CTX_ctrl /* shouldn't happen */
-# else
-# define EVP_CIPHER_CTX_ctrl(a,b,c,d) (0)
+#ifdef LIBRESSL_VERSION_NUMBER
+# if LIBRESSL_VERSION_NUMBER < 0x3010000fL
+#  define HAVE_BROKEN_CHACHA20
 # endif
 #endif
 
-#if defined(HAVE_EVP_RIPEMD160)
-# if defined(OPENSSL_NO_RIPEMD) || defined(OPENSSL_NO_RMD160)
-#  undef HAVE_EVP_RIPEMD160
-# endif
-#endif
-
+#if defined(OPENSSL_IS_BORINGSSL) || defined(OPENSSL_IS_AWSLC)
 /*
- * We overload some of the OpenSSL crypto functions with ssh_* equivalents
- * to automatically handle OpenSSL engine initialisation.
- *
- * In order for the compat library to call the real functions, it must
- * define SSH_DONT_OVERLOAD_OPENSSL_FUNCS before including this file and
- * implement the ssh_* equivalents.
+ * BoringSSL and AWS-LC (rightly) got rid of the BN_FLG_CONSTTIME flag, along with
+ * the entire BN_set_flags() interface.
+ * https://boringssl.googlesource.com/boringssl/+/0a211dfe9
  */
-#ifndef SSH_DONT_OVERLOAD_OPENSSL_FUNCS
+# define BN_set_flags(a, b)
+#endif
 
-# ifdef USE_OPENSSL_ENGINE
-#  ifdef OpenSSL_add_all_algorithms
-#   undef OpenSSL_add_all_algorithms
-#  endif
-#  define OpenSSL_add_all_algorithms()  ssh_OpenSSL_add_all_algorithms()
+/* LibreSSL <3.4 has the _GFp variants but not the equivalent modern ones. */
+#ifndef HAVE_EC_POINT_GET_AFFINE_COORDINATES
+# ifdef HAVE_EC_POINT_GET_AFFINE_COORDINATES_GFP
+#  define EC_POINT_get_affine_coordinates(a, b, c, d, e) \
+	(EC_POINT_get_affine_coordinates_GFp(a, b, c, d, e))
 # endif
+#endif
+#ifndef HAVE_EC_POINT_SET_AFFINE_COORDINATES
+# ifdef HAVE_EC_POINT_SET_AFFINE_COORDINATES_GFP
+#  define EC_POINT_set_affine_coordinates(a, b, c, d, e) \
+	(EC_POINT_set_affine_coordinates_GFp(a, b, c, d, e))
+# endif
+#endif
 
-void ssh_OpenSSL_add_all_algorithms(void);
+#ifndef HAVE_EVP_CIPHER_CTX_GET_IV
+# ifdef HAVE_EVP_CIPHER_CTX_GET_UPDATED_IV
+#  define EVP_CIPHER_CTX_get_iv EVP_CIPHER_CTX_get_updated_iv
+# else /* HAVE_EVP_CIPHER_CTX_GET_UPDATED_IV */
+int EVP_CIPHER_CTX_get_iv(const EVP_CIPHER_CTX *ctx,
+    unsigned char *iv, size_t len);
+# endif /* HAVE_EVP_CIPHER_CTX_GET_UPDATED_IV */
+#endif /* HAVE_EVP_CIPHER_CTX_GET_IV */
 
-#endif	/* SSH_DONT_OVERLOAD_OPENSSL_FUNCS */
+#ifndef HAVE_EVP_CIPHER_CTX_SET_IV
+int EVP_CIPHER_CTX_set_iv(EVP_CIPHER_CTX *ctx,
+    const unsigned char *iv, size_t len);
+#endif /* HAVE_EVP_CIPHER_CTX_SET_IV */
+
+#ifndef HAVE_EVP_DIGESTSIGN
+int EVP_DigestSign(EVP_MD_CTX *, unsigned char *, size_t *,
+    const unsigned char *, size_t);
+#endif
+
+#ifndef HAVE_EVP_DIGESTVERIFY
+int EVP_DigestVerify(EVP_MD_CTX *, const unsigned char *, size_t,
+    const unsigned char *, size_t);
+#endif
 
 #endif /* WITH_OPENSSL */
 #endif /* _OPENSSL_COMPAT_H */

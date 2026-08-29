@@ -1,4 +1,4 @@
-/* 	$OpenBSD: test_sshkey.c,v 1.14 2018/07/13 02:13:19 djm Exp $ */
+/* 	$OpenBSD: test_sshkey.c,v 1.34 2026/06/14 04:08:06 djm Exp $ */
 /*
  * Regress test for sshkey.h key management API
  *
@@ -8,19 +8,15 @@
 #include "includes.h"
 
 #include <sys/types.h>
-#include <sys/param.h>
 #include <stdio.h>
-#ifdef HAVE_STDINT_H
 #include <stdint.h>
-#endif
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef WITH_OPENSSL
 #include <openssl/bn.h>
+#include <openssl/ec.h>
 #include <openssl/rsa.h>
-#include <openssl/dsa.h>
-#if defined(OPENSSL_HAS_ECC) && defined(OPENSSL_HAS_NISTP256)
-# include <openssl/ec.h>
 #endif
 
 #include "../test_helper/test_helper.h"
@@ -35,6 +31,7 @@
 #include "ssh2.h"
 
 void sshkey_tests(void);
+void sshkey_benchmarks(void);
 
 static void
 put_opt(struct sshbuf *b, const char *name, const char *value)
@@ -50,9 +47,10 @@ put_opt(struct sshbuf *b, const char *name, const char *value)
 	sshbuf_free(sect);
 }
 
+#ifdef WITH_OPENSSL
 static void
-build_cert(struct sshbuf *b, const struct sshkey *k, const char *type,
-    const struct sshkey *sign_key, const struct sshkey *ca_key,
+build_cert(struct sshbuf *b, struct sshkey *k, const char *type,
+    struct sshkey *sign_key, struct sshkey *ca_key,
     const char *sig_alg)
 {
 	struct sshbuf *ca_buf, *pk, *principals, *critopts, *exts;
@@ -100,7 +98,7 @@ build_cert(struct sshbuf *b, const struct sshkey *k, const char *type,
 	ASSERT_INT_EQ(sshbuf_put_string(b, NULL, 0), 0); /* reserved */
 	ASSERT_INT_EQ(sshbuf_put_stringb(b, ca_buf), 0); /* signature key */
 	ASSERT_INT_EQ(sshkey_sign(sign_key, &sigblob, &siglen,
-	    sshbuf_ptr(b), sshbuf_len(b), sig_alg, 0), 0);
+	    sshbuf_ptr(b), sshbuf_len(b), sig_alg, NULL, NULL, 0), 0);
 	ASSERT_INT_EQ(sshbuf_put_string(b, sigblob, siglen), 0); /* signature */
 
 	free(sigblob);
@@ -110,6 +108,7 @@ build_cert(struct sshbuf *b, const struct sshkey *k, const char *type,
 	sshbuf_free(principals);
 	sshbuf_free(pk);
 }
+#endif /* WITH_OPENSSL */
 
 static void
 signature_test(struct sshkey *k, struct sshkey *bad, const char *sig_alg,
@@ -118,15 +117,65 @@ signature_test(struct sshkey *k, struct sshkey *bad, const char *sig_alg,
 	size_t len;
 	u_char *sig;
 
-	ASSERT_INT_EQ(sshkey_sign(k, &sig, &len, d, l, sig_alg, 0), 0);
+	ASSERT_INT_EQ(sshkey_sign(k, &sig, &len, d, l, sig_alg,
+	    NULL, NULL, 0), 0);
 	ASSERT_SIZE_T_GT(len, 8);
 	ASSERT_PTR_NE(sig, NULL);
-	ASSERT_INT_EQ(sshkey_verify(k, sig, len, d, l, NULL, 0), 0);
-	ASSERT_INT_NE(sshkey_verify(bad, sig, len, d, l, NULL, 0), 0);
+	ASSERT_INT_EQ(sshkey_verify(k, sig, len, d, l, NULL, 0, NULL), 0);
+	ASSERT_INT_NE(sshkey_verify(bad, sig, len, d, l, NULL, 0, NULL), 0);
 	/* Fuzz test is more comprehensive, this is just a smoke test */
 	sig[len - 5] ^= 0x10;
-	ASSERT_INT_NE(sshkey_verify(k, sig, len, d, l, NULL, 0), 0);
+	ASSERT_INT_NE(sshkey_verify(k, sig, len, d, l, NULL, 0, NULL), 0);
 	free(sig);
+}
+
+static void
+signature_bench(const char *name, int ktype, int bits, const char *sig_alg,
+    const u_char *d, size_t l)
+{
+	struct sshkey *k;
+	size_t len;
+	u_char *sig;
+	char testname[256];
+
+	snprintf(testname, sizeof(testname), "sign %s", name);
+	TEST_START(testname);
+	ASSERT_INT_EQ(sshkey_generate(ktype, bits, &k), 0);
+	ASSERT_PTR_NE(k, NULL);
+
+	BENCH_START(testname);
+	ASSERT_INT_EQ(sshkey_sign(k, &sig, &len, d, l, sig_alg,
+	    NULL, NULL, 0), 0);
+	free(sig);
+	BENCH_FINISH("sign");
+
+	sshkey_free(k);
+	TEST_DONE();
+}
+
+static void
+verify_bench(const char *name, int ktype, int bits, const char *sig_alg,
+    const u_char *d, size_t l)
+{
+	struct sshkey *k;
+	size_t len;
+	u_char *sig;
+	char testname[256];
+
+	snprintf(testname, sizeof(testname), "verify %s", name);
+	TEST_START(testname);
+	ASSERT_INT_EQ(sshkey_generate(ktype, bits, &k), 0);
+	ASSERT_PTR_NE(k, NULL);
+
+	ASSERT_INT_EQ(sshkey_sign(k, &sig, &len, d, l, sig_alg,
+	    NULL, NULL, 0), 0);
+	BENCH_START(testname);
+	ASSERT_INT_EQ(sshkey_verify(k, sig, len, d, l, NULL, 0, NULL), 0);
+	BENCH_FINISH("verify");
+
+	free(sig);
+	sshkey_free(k);
+	TEST_DONE();
 }
 
 static void
@@ -140,7 +189,7 @@ banana(u_char *s, size_t l)
 			memcpy(s + o, "nanananana", l - o);
 			break;
 		}
-		memcpy(s + o, banana, sizeof(the_banana));
+		memcpy(s + o, the_banana, sizeof(the_banana));
 	}
 }
 
@@ -161,6 +210,19 @@ signature_tests(struct sshkey *k, struct sshkey *bad, const char *sig_alg)
 	}
 }
 
+static void
+signature_benchmark(const char *name, int ktype, int bits,
+    const char *sig_alg, int bench_verify)
+{
+	u_char buf[256];
+
+	banana(buf, sizeof(buf));
+	if (bench_verify)
+		verify_bench(name, ktype, bits, sig_alg, buf, sizeof(buf));
+	else
+		signature_bench(name, ktype, bits, sig_alg, buf, sizeof(buf));
+}
+
 static struct sshkey *
 get_private(const char *n)
 {
@@ -176,11 +238,9 @@ get_private(const char *n)
 void
 sshkey_tests(void)
 {
-	struct sshkey *k1, *k2, *k3, *k4, *kr, *kd, *kf;
-#ifdef OPENSSL_HAS_ECC
-	struct sshkey *ke;
-#endif
-	struct sshbuf *b;
+	struct sshkey *k1 = NULL, *k2 = NULL, *k3 = NULL, *k4 = NULL;
+	struct sshkey *kr = NULL, *kd = NULL, *ke = NULL, *kf = NULL;
+	struct sshbuf *b = NULL;
 
 	TEST_START("new invalid");
 	k1 = sshkey_new(-42);
@@ -191,35 +251,26 @@ sshkey_tests(void)
 	k1 = sshkey_new(KEY_UNSPEC);
 	ASSERT_PTR_NE(k1, NULL);
 	sshkey_free(k1);
+	k1 = NULL;
 	TEST_DONE();
 
+#ifdef WITH_OPENSSL
 	TEST_START("new/free KEY_RSA");
 	k1 = sshkey_new(KEY_RSA);
 	ASSERT_PTR_NE(k1, NULL);
-	ASSERT_PTR_NE(k1->rsa, NULL);
-	ASSERT_PTR_NE(k1->rsa->n, NULL);
-	ASSERT_PTR_NE(k1->rsa->e, NULL);
-	ASSERT_PTR_EQ(k1->rsa->p, NULL);
+	ASSERT_PTR_NE(k1->pkey, NULL);
 	sshkey_free(k1);
+	k1 = NULL;
 	TEST_DONE();
 
-	TEST_START("new/free KEY_DSA");
-	k1 = sshkey_new(KEY_DSA);
-	ASSERT_PTR_NE(k1, NULL);
-	ASSERT_PTR_NE(k1->dsa, NULL);
-	ASSERT_PTR_NE(k1->dsa->g, NULL);
-	ASSERT_PTR_EQ(k1->dsa->priv_key, NULL);
-	sshkey_free(k1);
-	TEST_DONE();
-
-#ifdef OPENSSL_HAS_ECC
 	TEST_START("new/free KEY_ECDSA");
 	k1 = sshkey_new(KEY_ECDSA);
 	ASSERT_PTR_NE(k1, NULL);
-	ASSERT_PTR_EQ(k1->ecdsa, NULL);  /* Can't allocate without NID */
+	ASSERT_PTR_EQ(k1->pkey, NULL);  /* Can't allocate without NID */
 	sshkey_free(k1);
+	k1 = NULL;
 	TEST_DONE();
-#endif
+#endif /* WITH_OPENSSL */
 
 	TEST_START("new/free KEY_ED25519");
 	k1 = sshkey_new(KEY_ED25519);
@@ -228,29 +279,19 @@ sshkey_tests(void)
 	ASSERT_PTR_EQ(k1->ed25519_sk, NULL);
 	ASSERT_PTR_EQ(k1->ed25519_pk, NULL);
 	sshkey_free(k1);
+	k1 = NULL;
 	TEST_DONE();
 
-	TEST_START("new_private KEY_RSA");
-	k1 = sshkey_new_private(KEY_RSA);
+	TEST_START("new/free KEY_MLDSA44_ED25519");
+	k1 = sshkey_new(KEY_MLDSA44_ED25519);
 	ASSERT_PTR_NE(k1, NULL);
-	ASSERT_PTR_NE(k1->rsa, NULL);
-	ASSERT_PTR_NE(k1->rsa->n, NULL);
-	ASSERT_PTR_NE(k1->rsa->e, NULL);
-	ASSERT_PTR_NE(k1->rsa->p, NULL);
-	ASSERT_INT_EQ(sshkey_add_private(k1), 0);
+	ASSERT_PTR_EQ(k1->mldsa_ed25519_sk, NULL);
+	ASSERT_PTR_EQ(k1->mldsa_ed25519_pk, NULL);
 	sshkey_free(k1);
+	k1 = NULL;
 	TEST_DONE();
 
-	TEST_START("new_private KEY_DSA");
-	k1 = sshkey_new_private(KEY_DSA);
-	ASSERT_PTR_NE(k1, NULL);
-	ASSERT_PTR_NE(k1->dsa, NULL);
-	ASSERT_PTR_NE(k1->dsa->g, NULL);
-	ASSERT_PTR_NE(k1->dsa->priv_key, NULL);
-	ASSERT_INT_EQ(sshkey_add_private(k1), 0);
-	sshkey_free(k1);
-	TEST_DONE();
-
+#ifdef WITH_OPENSSL
 	TEST_START("generate KEY_RSA too small modulus");
 	ASSERT_INT_EQ(sshkey_generate(KEY_RSA, 128, &k1),
 	    SSH_ERR_KEY_LENGTH);
@@ -263,51 +304,38 @@ sshkey_tests(void)
 	ASSERT_PTR_EQ(k1, NULL);
 	TEST_DONE();
 
-	TEST_START("generate KEY_DSA wrong bits");
-	ASSERT_INT_EQ(sshkey_generate(KEY_DSA, 2048, &k1),
-	    SSH_ERR_KEY_LENGTH);
-	ASSERT_PTR_EQ(k1, NULL);
-	sshkey_free(k1);
-	TEST_DONE();
 
-#ifdef OPENSSL_HAS_ECC
 	TEST_START("generate KEY_ECDSA wrong bits");
 	ASSERT_INT_EQ(sshkey_generate(KEY_ECDSA, 42, &k1),
 	    SSH_ERR_KEY_LENGTH);
 	ASSERT_PTR_EQ(k1, NULL);
 	sshkey_free(k1);
+	k1 = NULL;
 	TEST_DONE();
-#endif
 
 	TEST_START("generate KEY_RSA");
 	ASSERT_INT_EQ(sshkey_generate(KEY_RSA, 767, &kr),
 	    SSH_ERR_KEY_LENGTH);
 	ASSERT_INT_EQ(sshkey_generate(KEY_RSA, 1024, &kr), 0);
 	ASSERT_PTR_NE(kr, NULL);
-	ASSERT_PTR_NE(kr->rsa, NULL);
-	ASSERT_PTR_NE(kr->rsa->n, NULL);
-	ASSERT_PTR_NE(kr->rsa->e, NULL);
-	ASSERT_PTR_NE(kr->rsa->p, NULL);
-	ASSERT_INT_EQ(BN_num_bits(kr->rsa->n), 1024);
+	ASSERT_PTR_NE(EVP_PKEY_get0_RSA(kr->pkey), NULL);
+	ASSERT_PTR_NE(rsa_n(kr), NULL);
+	ASSERT_PTR_NE(rsa_e(kr), NULL);
+	ASSERT_PTR_NE(rsa_p(kr), NULL);
+	ASSERT_INT_EQ(BN_num_bits(rsa_n(kr)), 1024);
 	TEST_DONE();
 
-	TEST_START("generate KEY_DSA");
-	ASSERT_INT_EQ(sshkey_generate(KEY_DSA, 1024, &kd), 0);
-	ASSERT_PTR_NE(kd, NULL);
-	ASSERT_PTR_NE(kd->dsa, NULL);
-	ASSERT_PTR_NE(kd->dsa->g, NULL);
-	ASSERT_PTR_NE(kd->dsa->priv_key, NULL);
-	TEST_DONE();
 
-#ifdef OPENSSL_HAS_ECC
 	TEST_START("generate KEY_ECDSA");
 	ASSERT_INT_EQ(sshkey_generate(KEY_ECDSA, 256, &ke), 0);
 	ASSERT_PTR_NE(ke, NULL);
-	ASSERT_PTR_NE(ke->ecdsa, NULL);
-	ASSERT_PTR_NE(EC_KEY_get0_public_key(ke->ecdsa), NULL);
-	ASSERT_PTR_NE(EC_KEY_get0_private_key(ke->ecdsa), NULL);
+	ASSERT_PTR_NE(EVP_PKEY_get0_EC_KEY(ke->pkey), NULL);
+	ASSERT_PTR_NE(EC_KEY_get0_public_key(EVP_PKEY_get0_EC_KEY(ke->pkey)),
+	    NULL);
+	ASSERT_PTR_NE(EC_KEY_get0_private_key(EVP_PKEY_get0_EC_KEY(ke->pkey)),
+	    NULL);
 	TEST_DONE();
-#endif
+#endif /* WITH_OPENSSL */
 
 	TEST_START("generate KEY_ED25519");
 	ASSERT_INT_EQ(sshkey_generate(KEY_ED25519, 256, &kf), 0);
@@ -317,57 +345,57 @@ sshkey_tests(void)
 	ASSERT_PTR_NE(kf->ed25519_sk, NULL);
 	TEST_DONE();
 
+	TEST_START("generate KEY_MLDSA44_ED25519");
+	ASSERT_INT_EQ(sshkey_generate(KEY_MLDSA44_ED25519, 256, &k1), 0);
+	ASSERT_PTR_NE(k1, NULL);
+	ASSERT_INT_EQ(k1->type, KEY_MLDSA44_ED25519);
+	ASSERT_PTR_NE(k1->mldsa_ed25519_pk, NULL);
+	ASSERT_PTR_NE(k1->mldsa_ed25519_sk, NULL);
+	sshkey_free(k1);
+	k1 = NULL;
+	TEST_DONE();
+
+#ifdef WITH_OPENSSL
 	TEST_START("demote KEY_RSA");
-	ASSERT_INT_EQ(sshkey_demote(kr, &k1), 0);
+	ASSERT_INT_EQ(sshkey_from_private(kr, &k1), 0);
 	ASSERT_PTR_NE(k1, NULL);
 	ASSERT_PTR_NE(kr, k1);
 	ASSERT_INT_EQ(k1->type, KEY_RSA);
-	ASSERT_PTR_NE(k1->rsa, NULL);
-	ASSERT_PTR_NE(k1->rsa->n, NULL);
-	ASSERT_PTR_NE(k1->rsa->e, NULL);
-	ASSERT_PTR_EQ(k1->rsa->p, NULL);
+	ASSERT_PTR_NE(EVP_PKEY_get0_RSA(k1->pkey), NULL);
+	ASSERT_PTR_NE(rsa_n(k1), NULL);
+	ASSERT_PTR_NE(rsa_e(k1), NULL);
+	ASSERT_PTR_EQ(rsa_p(k1), NULL);
 	TEST_DONE();
 
 	TEST_START("equal KEY_RSA/demoted KEY_RSA");
 	ASSERT_INT_EQ(sshkey_equal(kr, k1), 1);
 	sshkey_free(k1);
+	k1 = NULL;
 	TEST_DONE();
 
-	TEST_START("demote KEY_DSA");
-	ASSERT_INT_EQ(sshkey_demote(kd, &k1), 0);
-	ASSERT_PTR_NE(k1, NULL);
-	ASSERT_PTR_NE(kd, k1);
-	ASSERT_INT_EQ(k1->type, KEY_DSA);
-	ASSERT_PTR_NE(k1->dsa, NULL);
-	ASSERT_PTR_NE(k1->dsa->g, NULL);
-	ASSERT_PTR_EQ(k1->dsa->priv_key, NULL);
-	TEST_DONE();
 
-	TEST_START("equal KEY_DSA/demoted KEY_DSA");
-	ASSERT_INT_EQ(sshkey_equal(kd, k1), 1);
-	sshkey_free(k1);
-	TEST_DONE();
-
-#ifdef OPENSSL_HAS_ECC
 	TEST_START("demote KEY_ECDSA");
-	ASSERT_INT_EQ(sshkey_demote(ke, &k1), 0);
+	ASSERT_INT_EQ(sshkey_from_private(ke, &k1), 0);
 	ASSERT_PTR_NE(k1, NULL);
 	ASSERT_PTR_NE(ke, k1);
 	ASSERT_INT_EQ(k1->type, KEY_ECDSA);
-	ASSERT_PTR_NE(k1->ecdsa, NULL);
+	ASSERT_PTR_NE(EVP_PKEY_get0_EC_KEY(k1->pkey), NULL);
 	ASSERT_INT_EQ(k1->ecdsa_nid, ke->ecdsa_nid);
-	ASSERT_PTR_NE(EC_KEY_get0_public_key(ke->ecdsa), NULL);
-	ASSERT_PTR_EQ(EC_KEY_get0_private_key(k1->ecdsa), NULL);
+	ASSERT_PTR_NE(EC_KEY_get0_public_key(EVP_PKEY_get0_EC_KEY(ke->pkey)),
+	   NULL);
+	ASSERT_PTR_EQ(EC_KEY_get0_private_key(EVP_PKEY_get0_EC_KEY(k1->pkey)),
+	   NULL);
 	TEST_DONE();
 
 	TEST_START("equal KEY_ECDSA/demoted KEY_ECDSA");
 	ASSERT_INT_EQ(sshkey_equal(ke, k1), 1);
 	sshkey_free(k1);
+	k1 = NULL;
 	TEST_DONE();
-#endif
+#endif /* WITH_OPENSSL */
 
 	TEST_START("demote KEY_ED25519");
-	ASSERT_INT_EQ(sshkey_demote(kf, &k1), 0);
+	ASSERT_INT_EQ(sshkey_from_private(kf, &k1), 0);
 	ASSERT_PTR_NE(k1, NULL);
 	ASSERT_PTR_NE(kf, k1);
 	ASSERT_INT_EQ(k1->type, KEY_ED25519);
@@ -378,15 +406,32 @@ sshkey_tests(void)
 	TEST_START("equal KEY_ED25519/demoted KEY_ED25519");
 	ASSERT_INT_EQ(sshkey_equal(kf, k1), 1);
 	sshkey_free(k1);
+	k1 = NULL;
 	TEST_DONE();
 
+	TEST_START("demote KEY_MLDSA44_ED25519");
+	ASSERT_INT_EQ(sshkey_generate(KEY_MLDSA44_ED25519, 256, &k2), 0);
+	ASSERT_INT_EQ(sshkey_from_private(k2, &k1), 0);
+	ASSERT_PTR_NE(k1, NULL);
+	ASSERT_PTR_NE(k2, k1);
+	ASSERT_INT_EQ(k1->type, KEY_MLDSA44_ED25519);
+	ASSERT_PTR_NE(k1->mldsa_ed25519_pk, NULL);
+	ASSERT_PTR_EQ(k1->mldsa_ed25519_sk, NULL);
+	TEST_DONE();
+
+	TEST_START("equal KEY_MLDSA44_ED25519/demoted KEY_MLDSA44_ED25519");
+	ASSERT_INT_EQ(sshkey_equal(k2, k1), 1);
+	sshkey_free(k1);
+	sshkey_free(k2);
+	k1 = k2 = NULL;
+	TEST_DONE();
+
+#ifdef WITH_OPENSSL
 	TEST_START("equal mismatched key types");
 	ASSERT_INT_EQ(sshkey_equal(kd, kr), 0);
-#ifdef OPENSSL_HAS_ECC
 	ASSERT_INT_EQ(sshkey_equal(kd, ke), 0);
 	ASSERT_INT_EQ(sshkey_equal(kr, ke), 0);
 	ASSERT_INT_EQ(sshkey_equal(ke, kf), 0);
-#endif
 	ASSERT_INT_EQ(sshkey_equal(kd, kf), 0);
 	TEST_DONE();
 
@@ -394,25 +439,29 @@ sshkey_tests(void)
 	ASSERT_INT_EQ(sshkey_generate(KEY_RSA, 1024, &k1), 0);
 	ASSERT_INT_EQ(sshkey_equal(kr, k1), 0);
 	sshkey_free(k1);
-	ASSERT_INT_EQ(sshkey_generate(KEY_DSA, 1024, &k1), 0);
-	ASSERT_INT_EQ(sshkey_equal(kd, k1), 0);
-	sshkey_free(k1);
-#ifdef OPENSSL_HAS_ECC
+	k1 = NULL;
 	ASSERT_INT_EQ(sshkey_generate(KEY_ECDSA, 256, &k1), 0);
 	ASSERT_INT_EQ(sshkey_equal(ke, k1), 0);
 	sshkey_free(k1);
-#endif
+	k1 = NULL;
 	ASSERT_INT_EQ(sshkey_generate(KEY_ED25519, 256, &k1), 0);
 	ASSERT_INT_EQ(sshkey_equal(kf, k1), 0);
 	sshkey_free(k1);
+	k1 = NULL;
+	ASSERT_INT_EQ(sshkey_generate(KEY_MLDSA44_ED25519, 256, &k1), 0);
+	ASSERT_INT_EQ(sshkey_generate(KEY_MLDSA44_ED25519, 256, &k2), 0);
+	ASSERT_INT_EQ(sshkey_equal(k2, k1), 0);
+	sshkey_free(k1);
+	sshkey_free(k2);
+	k1 = k2 = NULL;
 	TEST_DONE();
+#endif /* WITH_OPENSSL */
 
 	sshkey_free(kr);
 	sshkey_free(kd);
-#ifdef OPENSSL_HAS_ECC
 	sshkey_free(ke);
-#endif
 	sshkey_free(kf);
+	kr = kd = ke = kf = NULL;
 
 	TEST_START("certify key");
 	ASSERT_INT_EQ(sshkey_load_public(test_data_file("ed25519_1.pub"),
@@ -436,7 +485,7 @@ sshkey_tests(void)
 	ASSERT_PTR_NE(k1->cert->principals[3], NULL);
 	k1->cert->nprincipals = 4;
 	k1->cert->valid_after = 0;
-	k1->cert->valid_before = (u_int64_t)-1;
+	k1->cert->valid_before = (uint64_t)-1;
 	sshbuf_free(k1->cert->critical);
 	k1->cert->critical = sshbuf_new();
 	ASSERT_PTR_NE(k1->cert->critical, NULL);
@@ -448,7 +497,7 @@ sshkey_tests(void)
 	put_opt(k1->cert->extensions, "permit-X11-forwarding", NULL);
 	put_opt(k1->cert->extensions, "permit-agent-forwarding", NULL);
 	ASSERT_INT_EQ(sshkey_from_private(k2, &k1->cert->signature_key), 0);
-	ASSERT_INT_EQ(sshkey_certify(k1, k2, NULL), 0);
+	ASSERT_INT_EQ(sshkey_certify(k1, k2, NULL, NULL, NULL), 0);
 	b = sshbuf_new();
 	ASSERT_PTR_NE(b, NULL);
 	ASSERT_INT_EQ(sshkey_putb(k1, b), 0);
@@ -457,9 +506,57 @@ sshkey_tests(void)
 	sshkey_free(k1);
 	sshkey_free(k2);
 	sshkey_free(k3);
+	k1 = k2 = k3 = NULL;
 	sshbuf_reset(b);
 	TEST_DONE();
 
+	TEST_START("certify key MLDSA44-ED25519");
+	ASSERT_INT_EQ(sshkey_load_public(
+	    test_data_file("mldsa44_ed25519_1.pub"), &k1, NULL), 0);
+	k2 = get_private("mldsa44_ed25519_2");
+	ASSERT_INT_EQ(sshkey_to_certified(k1), 0);
+	ASSERT_PTR_NE(k1->cert, NULL);
+	k1->cert->type = SSH2_CERT_TYPE_USER;
+	k1->cert->serial = 1234;
+	k1->cert->key_id = strdup("estragon");
+	ASSERT_PTR_NE(k1->cert->key_id, NULL);
+	k1->cert->principals = calloc(4, sizeof(*k1->cert->principals));
+	ASSERT_PTR_NE(k1->cert->principals, NULL);
+	k1->cert->principals[0] = strdup("estragon");
+	k1->cert->principals[1] = strdup("vladimir");
+	k1->cert->principals[2] = strdup("pozzo");
+	k1->cert->principals[3] = strdup("lucky");
+	ASSERT_PTR_NE(k1->cert->principals[0], NULL);
+	ASSERT_PTR_NE(k1->cert->principals[1], NULL);
+	ASSERT_PTR_NE(k1->cert->principals[2], NULL);
+	ASSERT_PTR_NE(k1->cert->principals[3], NULL);
+	k1->cert->nprincipals = 4;
+	k1->cert->valid_after = 0;
+	k1->cert->valid_before = (uint64_t)-1;
+	sshbuf_free(k1->cert->critical);
+	k1->cert->critical = sshbuf_new();
+	ASSERT_PTR_NE(k1->cert->critical, NULL);
+	sshbuf_free(k1->cert->extensions);
+	k1->cert->extensions = sshbuf_new();
+	ASSERT_PTR_NE(k1->cert->extensions, NULL);
+	put_opt(k1->cert->critical, "force-command", "/usr/bin/true");
+	put_opt(k1->cert->critical, "source-address", "127.0.0.1");
+	put_opt(k1->cert->extensions, "permit-X11-forwarding", NULL);
+	put_opt(k1->cert->extensions, "permit-agent-forwarding", NULL);
+	ASSERT_INT_EQ(sshkey_from_private(k2, &k1->cert->signature_key), 0);
+	ASSERT_INT_EQ(sshkey_certify(k1, k2, NULL, NULL, NULL), 0);
+	b = sshbuf_new();
+	ASSERT_PTR_NE(b, NULL);
+	ASSERT_INT_EQ(sshkey_putb(k1, b), 0);
+	ASSERT_INT_EQ(sshkey_from_blob(sshbuf_ptr(b), sshbuf_len(b), &k3), 0);
+	sshkey_free(k1);
+	sshkey_free(k2);
+	sshkey_free(k3);
+	k1 = k2 = k3 = NULL;
+	sshbuf_reset(b);
+	TEST_DONE();
+
+#ifdef WITH_OPENSSL
 	TEST_START("sign and verify RSA");
 	k1 = get_private("rsa_1");
 	ASSERT_INT_EQ(sshkey_load_public(test_data_file("rsa_2.pub"), &k2,
@@ -467,6 +564,7 @@ sshkey_tests(void)
 	signature_tests(k1, k2, "ssh-rsa");
 	sshkey_free(k1);
 	sshkey_free(k2);
+	k1 = k2 = NULL;
 	TEST_DONE();
 
 	TEST_START("sign and verify RSA-SHA256");
@@ -476,6 +574,7 @@ sshkey_tests(void)
 	signature_tests(k1, k2, "rsa-sha2-256");
 	sshkey_free(k1);
 	sshkey_free(k2);
+	k1 = k2 = NULL;
 	TEST_DONE();
 
 	TEST_START("sign and verify RSA-SHA512");
@@ -485,18 +584,10 @@ sshkey_tests(void)
 	signature_tests(k1, k2, "rsa-sha2-512");
 	sshkey_free(k1);
 	sshkey_free(k2);
+	k1 = k2 = NULL;
 	TEST_DONE();
 
-	TEST_START("sign and verify DSA");
-	k1 = get_private("dsa_1");
-	ASSERT_INT_EQ(sshkey_load_public(test_data_file("dsa_2.pub"), &k2,
-	    NULL), 0);
-	signature_tests(k1, k2, NULL);
-	sshkey_free(k1);
-	sshkey_free(k2);
-	TEST_DONE();
 
-#ifdef OPENSSL_HAS_ECC
 	TEST_START("sign and verify ECDSA");
 	k1 = get_private("ecdsa_1");
 	ASSERT_INT_EQ(sshkey_load_public(test_data_file("ecdsa_2.pub"), &k2,
@@ -504,8 +595,9 @@ sshkey_tests(void)
 	signature_tests(k1, k2, NULL);
 	sshkey_free(k1);
 	sshkey_free(k2);
+	k1 = k2 = NULL;
 	TEST_DONE();
-#endif
+#endif /* WITH_OPENSSL */
 
 	TEST_START("sign and verify ED25519");
 	k1 = get_private("ed25519_1");
@@ -514,8 +606,20 @@ sshkey_tests(void)
 	signature_tests(k1, k2, NULL);
 	sshkey_free(k1);
 	sshkey_free(k2);
+	k1 = k2 = NULL;
 	TEST_DONE();
 
+	TEST_START("sign and verify MLDSA44-ED25519");
+	k1 = get_private("mldsa44_ed25519_1");
+	ASSERT_INT_EQ(sshkey_load_public(
+	    test_data_file("mldsa44_ed25519_2.pub"), &k2, NULL), 0);
+	signature_tests(k1, k2, NULL);
+	sshkey_free(k1);
+	sshkey_free(k2);
+	k1 = k2 = NULL;
+	TEST_DONE();
+
+#ifdef WITH_OPENSSL
 	TEST_START("nested certificate");
 	ASSERT_INT_EQ(sshkey_load_cert(test_data_file("rsa_1"), &k1), 0);
 	ASSERT_INT_EQ(sshkey_load_public(test_data_file("rsa_1.pub"), &k2,
@@ -528,7 +632,107 @@ sshkey_tests(void)
 	sshkey_free(k1);
 	sshkey_free(k2);
 	sshkey_free(k3);
+	k1 = k2 = k3 = NULL;
 	sshbuf_free(b);
 	TEST_DONE();
+#endif /* WITH_OPENSSL */
+}
 
+void
+sshkey_benchmarks(void)
+{
+	struct sshkey *k = NULL;
+
+#ifdef WITH_OPENSSL
+	BENCH_START("generate RSA-1024");
+	TEST_START("generate KEY_RSA");
+	ASSERT_INT_EQ(sshkey_generate(KEY_RSA, 1024, &k), 0);
+	ASSERT_PTR_NE(k, NULL);
+	sshkey_free(k);
+	k = NULL;
+	TEST_DONE();
+	BENCH_FINISH("keys");
+
+	BENCH_START("generate RSA-2048");
+	TEST_START("generate KEY_RSA");
+	ASSERT_INT_EQ(sshkey_generate(KEY_RSA, 2048, &k), 0);
+	ASSERT_PTR_NE(k, NULL);
+	sshkey_free(k);
+	k = NULL;
+	TEST_DONE();
+	BENCH_FINISH("keys");
+
+	BENCH_START("generate ECDSA-256");
+	TEST_START("generate KEY_ECDSA");
+	ASSERT_INT_EQ(sshkey_generate(KEY_ECDSA, 256, &k), 0);
+	ASSERT_PTR_NE(k, NULL);
+	sshkey_free(k);
+	k = NULL;
+	TEST_DONE();
+	BENCH_FINISH("keys");
+
+	BENCH_START("generate ECDSA-384");
+	TEST_START("generate KEY_ECDSA");
+	ASSERT_INT_EQ(sshkey_generate(KEY_ECDSA, 384, &k), 0);
+	ASSERT_PTR_NE(k, NULL);
+	sshkey_free(k);
+	k = NULL;
+	TEST_DONE();
+	BENCH_FINISH("keys");
+
+	BENCH_START("generate ECDSA-521");
+	TEST_START("generate KEY_ECDSA");
+	ASSERT_INT_EQ(sshkey_generate(KEY_ECDSA, 521, &k), 0);
+	ASSERT_PTR_NE(k, NULL);
+	sshkey_free(k);
+	k = NULL;
+	TEST_DONE();
+	BENCH_FINISH("keys");
+#endif /* WITH_OPENSSL */
+
+	BENCH_START("generate ED25519");
+	TEST_START("generate KEY_ED25519");
+	ASSERT_INT_EQ(sshkey_generate(KEY_ED25519, 256, &k), 0);
+	ASSERT_PTR_NE(k, NULL);
+	sshkey_free(k);
+	k = NULL;
+	TEST_DONE();
+	BENCH_FINISH("keys");
+
+	BENCH_START("generate MLDSA44-ED25519");
+	TEST_START("generate KEY_MLDSA44_ED25519");
+	ASSERT_INT_EQ(sshkey_generate(KEY_MLDSA44_ED25519, 256, &k), 0);
+	ASSERT_PTR_NE(k, NULL);
+	sshkey_free(k);
+	k = NULL;
+	TEST_DONE();
+	BENCH_FINISH("keys");
+
+#ifdef WITH_OPENSSL
+	/* sign */
+	signature_benchmark("RSA-1024/SHA1", KEY_RSA, 1024, "ssh-rsa", 0);
+	signature_benchmark("RSA-1024/SHA256", KEY_RSA, 1024, "rsa-sha2-256", 0);
+	signature_benchmark("RSA-1024/SHA512", KEY_RSA, 1024, "rsa-sha2-512", 0);
+	signature_benchmark("RSA-2048/SHA1", KEY_RSA, 2048, "ssh-rsa", 0);
+	signature_benchmark("RSA-2048/SHA256", KEY_RSA, 2048, "rsa-sha2-256", 0);
+	signature_benchmark("RSA-2048/SHA512", KEY_RSA, 2048, "rsa-sha2-512", 0);
+	signature_benchmark("ECDSA-256", KEY_ECDSA, 256, NULL, 0);
+	signature_benchmark("ECDSA-384", KEY_ECDSA, 384, NULL, 0);
+	signature_benchmark("ECDSA-521", KEY_ECDSA, 521, NULL, 0);
+	signature_benchmark("ED25519", KEY_ED25519, 0, NULL, 0);
+	signature_benchmark("MLDSA44-ED25519", KEY_MLDSA44_ED25519, 0, NULL, 0);
+
+	/* verify */
+	signature_benchmark("RSA-1024/SHA1", KEY_RSA, 1024, "ssh-rsa", 1);
+	signature_benchmark("RSA-1024/SHA256", KEY_RSA, 1024, "rsa-sha2-256", 1);
+	signature_benchmark("RSA-1024/SHA512", KEY_RSA, 1024, "rsa-sha2-512", 1);
+	signature_benchmark("RSA-2048/SHA1", KEY_RSA, 2048, "ssh-rsa", 1);
+	signature_benchmark("RSA-2048/SHA256", KEY_RSA, 2048, "rsa-sha2-256", 1);
+	signature_benchmark("RSA-2048/SHA512", KEY_RSA, 2048, "rsa-sha2-512", 1);
+	signature_benchmark("ECDSA-256", KEY_ECDSA, 256, NULL, 1);
+	signature_benchmark("ECDSA-384", KEY_ECDSA, 384, NULL, 1);
+	signature_benchmark("ECDSA-521", KEY_ECDSA, 521, NULL, 1);
+#endif /* WITH_OPENSSL */
+	signature_benchmark("ED25519", KEY_ED25519, 0, NULL, 1);
+	signature_benchmark("MLDSA44-ED25519", KEY_MLDSA44_ED25519, 0, NULL, 1);
 }

@@ -51,6 +51,8 @@ linux_audit_record_event(int uid, const char *username, const char *hostname,
 		else
 			return 0; /* Must prevent login */
 	}
+        if (hostname != NULL && strcmp(hostname, "UNKNOWN") == 0)
+                hostname = NULL;
 	rc = audit_log_acct_message(audit_fd, AUDIT_USER_LOGIN,
 	    NULL, "login", username ? username : "(unknown)",
 	    username == NULL ? uid : -1, hostname, ip, ttyn, success);
@@ -97,10 +99,8 @@ audit_session_close(struct logininfo *li)
 }
 
 void
-audit_event(ssh_audit_event_t event)
+audit_event(struct ssh *ssh, ssh_audit_event_t event)
 {
-	struct ssh *ssh = active_state; /* XXX */
-
 	switch(event) {
 	case SSH_AUTH_SUCCESS:
 	case SSH_CONNECTION_CLOSE:
@@ -119,7 +119,7 @@ audit_event(ssh_audit_event_t event)
 		    ssh_remote_ipaddr(ssh), "sshd", 0);
 		break;
 	default:
-		debug("%s: unhandled event %d", __func__, event);
+		debug_f("unhandled event %d", event);
 		break;
 	}
 }

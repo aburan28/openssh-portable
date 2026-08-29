@@ -36,6 +36,8 @@ The available section types are:
 #define KRL_SECTION_EXPLICIT_KEY		2
 #define KRL_SECTION_FINGERPRINT_SHA1		3
 #define KRL_SECTION_SIGNATURE			4
+#define KRL_SECTION_FINGERPRINT_SHA256		5
+#define KRL_SECTION_EXTENSION			255
 
 2. Certificate section
 
@@ -63,6 +65,7 @@ The certificate section types are:
 #define KRL_SECTION_CERT_SERIAL_RANGE	0x21
 #define KRL_SECTION_CERT_SERIAL_BITMAP	0x22
 #define KRL_SECTION_CERT_KEY_ID		0x23
+#define KRL_SECTION_CERT_EXTENSION	0x39
 
 2.1 Certificate serial list section
 
@@ -113,6 +116,29 @@ associated with a particular identity, e.g. a host or a user.
 This section must contain at least one "key_id". This section may appear
 multiple times.
 
+2.5. Certificate Extension subsections
+
+This subsection type provides a generic extension mechanism to the
+certificates KRL section that may be used to provide optional or critical
+data.
+
+Extensions are stored in subsections of type
+KRL_SECTION_CERT_EXTENSION with the following contents:
+
+	string	extension_name
+	boolean is_critical
+	string	extension_contents.
+
+Where "extension_name" describes the type of extension. It is
+recommended that user extensions follow "cert-name@domain.org" naming.
+
+The "is_critical" indicates whether this extension is mandatory or
+optional. If true, then any unsupported extension encountered should
+result in KRL parsing failure. If false, then it may be safely be
+ignored.
+
+The "extension_contents" contains the body of the extension.
+
 3. Explicit key sections
 
 These sections, identified as KRL_SECTION_EXPLICIT_KEY, revoke keys
@@ -127,22 +153,49 @@ must be a raw key (i.e. not a certificate).
 
 This section may appear multiple times.
 
-4. SHA1 fingerprint sections
+4. SHA1/SHA256 fingerprint sections
 
-These sections, identified as KRL_SECTION_FINGERPRINT_SHA1, revoke
-plain keys (i.e. not certificates) by listing their SHA1 hashes:
+These sections, identified as KRL_SECTION_FINGERPRINT_SHA1 and
+KRL_SECTION_FINGERPRINT_SHA256, revoke plain keys (i.e. not
+certificates) by listing their hashes:
 
 	string	public_key_hash[0]
 	....
 
 This section must contain at least one "public_key_hash". The hash blob
-is obtained by taking the SHA1 hash of the public key blob. Hashes in
-this section must appear in numeric order, treating each hash as a big-
-endian integer.
+is obtained by taking the SHA1 or SHA256 hash of the public key blob.
+Hashes in this section must appear in numeric order, treating each hash
+as a big-endian integer.
 
 This section may appear multiple times.
 
-5. KRL signature sections
+5. Extension sections
+
+This section type provides a generic extension mechanism to the KRL
+format that may be used to provide optional or critical data.
+
+Extensions are recorded in sections of type KRL_SECTION_EXTENSION
+with the following contents:
+
+	string	extension_name
+	boolean is_critical
+	string	extension_contents.
+
+Where "extension_name" describes the type of extension. It is
+recommended that user extensions follow "name@domain.org" naming.
+
+The "is_critical" indicates whether this extension is mandatory or
+optional. If true, then any unsupported extension encountered should
+result in KRL parsing failure. If false, then it may be safely be
+ignored.
+
+The "extension_contents" contains the body of the extension.
+
+6. KRL signature sections
+
+Note: KRL signatures are not supported by OpenSSH. OpenSSH >= 9.4 will
+refuse to load KRLs that contain signatures. We recommend the use
+of SSHSIG (`ssh-keygen -Y sign ...`) style signatures for KRLs instead.
 
 The KRL_SECTION_SIGNATURE section serves a different purpose to the
 preceding ones: to provide cryptographic authentication of a KRL that
@@ -166,4 +219,4 @@ Implementations that retrieve KRLs over untrusted channels must verify
 signatures. Signature sections are optional for KRLs distributed by
 trusted means.
 
-$OpenBSD: PROTOCOL.krl,v 1.4 2018/04/10 00:10:49 djm Exp $
+$OpenBSD: PROTOCOL.krl,v 1.7 2023/07/17 04:01:10 djm Exp $

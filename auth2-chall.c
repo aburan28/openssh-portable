@@ -1,4 +1,4 @@
-/* $OpenBSD: auth2-chall.c,v 1.50 2018/07/11 18:55:11 markus Exp $ */
+/* $OpenBSD: auth2-chall.c,v 1.61 2026/07/06 07:44:48 djm Exp $ */
 /*
  * Copyright (c) 2001 Markus Friedl.  All rights reserved.
  * Copyright (c) 2001 Per Allansson.  All rights reserved.
@@ -28,9 +28,10 @@
 
 #include <sys/types.h>
 
-#include <stdarg.h>
+#include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <stdarg.h>
 
 #include "xmalloc.h"
 #include "ssh2.h"
@@ -50,22 +51,22 @@ extern ServerOptions options;
 
 static int auth2_challenge_start(struct ssh *);
 static int send_userauth_info_request(struct ssh *);
-static int input_userauth_info_response(int, u_int32_t, struct ssh *);
+static int input_userauth_info_response(int, uint32_t, struct ssh *);
 
 #ifdef BSD_AUTH
-extern KbdintDevice bsdauth_device;
+extern KbdintDevice mm_bsdauth_device;
 #else
 #ifdef USE_PAM
-extern KbdintDevice sshpam_device;
+extern KbdintDevice mm_sshpam_device;
 #endif
 #endif
 
 KbdintDevice *devices[] = {
 #ifdef BSD_AUTH
-	&bsdauth_device,
+	&mm_bsdauth_device,
 #else
 #ifdef USE_PAM
-	&sshpam_device,
+	&mm_sshpam_device,
 #endif
 #endif
 	NULL
@@ -111,15 +112,14 @@ kbdint_alloc(const char *devs)
 	kbdintctxt = xcalloc(1, sizeof(KbdintAuthctxt));
 	if (strcmp(devs, "") == 0) {
 		if ((b = sshbuf_new()) == NULL)
-			fatal("%s: sshbuf_new failed", __func__);
+			fatal_f("sshbuf_new failed");
 		for (i = 0; devices[i]; i++) {
 			if ((r = sshbuf_putf(b, "%s%s",
 			    sshbuf_len(b) ? "," : "", devices[i]->name)) != 0)
-				fatal("%s: buffer error: %s",
-				    __func__, ssh_err(r));
+				fatal_fr(r, "buffer error");
 		}
 		if ((kbdintctxt->devices = sshbuf_dup_string(b)) == NULL)
-			fatal("%s: sshbuf_dup_string failed", __func__);
+			fatal_f("sshbuf_dup_string failed");
 		sshbuf_free(b);
 	} else {
 		kbdintctxt->devices = xstrdup(devs);
@@ -146,8 +146,7 @@ kbdint_free(KbdintAuthctxt *kbdintctxt)
 	if (kbdintctxt->device)
 		kbdint_reset_device(kbdintctxt);
 	free(kbdintctxt->devices);
-	explicit_bzero(kbdintctxt, sizeof(*kbdintctxt));
-	free(kbdintctxt);
+	freezero(kbdintctxt, sizeof(*kbdintctxt));
 }
 /* get next device */
 static int
@@ -155,7 +154,7 @@ kbdint_next_device(Authctxt *authctxt, KbdintAuthctxt *kbdintctxt)
 {
 	size_t len;
 	char *t;
-	int i;
+	size_t i;
 
 	if (kbdintctxt->device)
 		kbdint_reset_device(kbdintctxt);
@@ -166,11 +165,15 @@ kbdint_next_device(Authctxt *authctxt, KbdintAuthctxt *kbdintctxt)
 		if (len == 0)
 			break;
 		for (i = 0; devices[i]; i++) {
+			if (i >= sizeof(kbdintctxt->devices_done) * 8 ||
+			    i >= sizeof(devices) / sizeof(devices[0]))
+				fatal_f("internal error: too many devices");
 			if ((kbdintctxt->devices_done & (1 << i)) != 0 ||
 			    !auth2_method_allowed(authctxt,
 			    "keyboard-interactive", devices[i]->name))
 				continue;
-			if (strncmp(kbdintctxt->devices, devices[i]->name,
+			if (strlen(devices[i]->name) == len &&
+			    memcmp(kbdintctxt->devices, devices[i]->name,
 			    len) == 0) {
 				kbdintctxt->device = devices[i];
 				kbdintctxt->devices_done |= 1 << i;
@@ -268,15 +271,15 @@ send_userauth_info_request(struct ssh *ssh)
 	    (r = sshpkt_put_cstring(ssh, instr)) != 0 ||
 	    (r = sshpkt_put_cstring(ssh, "")) != 0 ||	/* language not used */
 	    (r = sshpkt_put_u32(ssh, kbdintctxt->nreq)) != 0)
-		fatal("%s: %s", __func__, ssh_err(r));
+		fatal_fr(r, "start packet");
 	for (i = 0; i < kbdintctxt->nreq; i++) {
 		if ((r = sshpkt_put_cstring(ssh, prompts[i])) != 0 ||
 		    (r = sshpkt_put_u8(ssh, echo_on[i])) != 0)
-			fatal("%s: %s", __func__, ssh_err(r));
+			fatal_fr(r, "assemble packet");
 	}
 	if ((r = sshpkt_send(ssh)) != 0 ||
 	    (r = ssh_packet_write_wait(ssh)) != 0)
-		fatal("%s: %s", __func__, ssh_err(r));
+		fatal_fr(r, "send packet");
 
 	for (i = 0; i < kbdintctxt->nreq; i++)
 		free(prompts[i]);
@@ -288,7 +291,7 @@ send_userauth_info_request(struct ssh *ssh)
 }
 
 static int
-input_userauth_info_response(int type, u_int32_t seq, struct ssh *ssh)
+input_userauth_info_response(int type, uint32_t seq, struct ssh *ssh)
 {
 	Authctxt *authctxt = ssh->authctxt;
 	KbdintAuthctxt *kbdintctxt;
@@ -297,31 +300,32 @@ input_userauth_info_response(int type, u_int32_t seq, struct ssh *ssh)
 	u_int i, nresp;
 	const char *devicename = NULL;
 	char **response = NULL;
+	double tstart = monotime_double();
 
 	if (authctxt == NULL)
-		fatal("input_userauth_info_response: no authctxt");
+		fatal_f("no authctxt");
 	kbdintctxt = authctxt->kbdintctxt;
 	if (kbdintctxt == NULL || kbdintctxt->ctxt == NULL)
-		fatal("input_userauth_info_response: no kbdintctxt");
+		fatal_f("no kbdintctxt");
 	if (kbdintctxt->device == NULL)
-		fatal("input_userauth_info_response: no device");
+		fatal_f("no device");
 
 	authctxt->postponed = 0;	/* reset */
 	if ((r = sshpkt_get_u32(ssh, &nresp)) != 0)
-		fatal("%s: %s", __func__, ssh_err(r));
+		fatal_fr(r, "parse packet");
 	if (nresp != kbdintctxt->nreq)
-		fatal("input_userauth_info_response: wrong number of replies");
+		fatal_f("wrong number of replies");
 	if (nresp > 100)
-		fatal("input_userauth_info_response: too many replies");
+		fatal_f("too many replies");
 	if (nresp > 0) {
 		response = xcalloc(nresp, sizeof(char *));
-		for (i = 0; i < nresp; i++)
-			if ((r = sshpkt_get_cstring(ssh, &response[i],
-			    NULL)) != 0)
-				fatal("%s: %s", __func__, ssh_err(r));
+		for (i = 0; i < nresp; i++) {
+			if ((r = sshpkt_get_cstring(ssh, &response[i], NULL)) != 0)
+				fatal_fr(r, "parse response");
+		}
 	}
 	if ((r = sshpkt_get_end(ssh)) != 0)
-		fatal("%s: %s", __func__, ssh_err(r));
+		fatal_fr(r, "parse packet");
 
 	res = kbdintctxt->device->respond(kbdintctxt->ctxt, nresp, response);
 
@@ -355,29 +359,10 @@ input_userauth_info_response(int type, u_int32_t seq, struct ssh *ssh)
 			auth2_challenge_start(ssh);
 		}
 	}
+
+	if (!authenticated)
+		auth_failure_delay(authctxt, tstart);
 	userauth_finish(ssh, authenticated, "keyboard-interactive",
 	    devicename);
 	return 0;
-}
-
-void
-privsep_challenge_enable(void)
-{
-#if defined(BSD_AUTH) || defined(USE_PAM)
-	int n = 0;
-#endif
-#ifdef BSD_AUTH
-	extern KbdintDevice mm_bsdauth_device;
-#endif
-#ifdef USE_PAM
-	extern KbdintDevice mm_sshpam_device;
-#endif
-
-#ifdef BSD_AUTH
-	devices[n++] = &mm_bsdauth_device;
-#else
-#ifdef USE_PAM
-	devices[n++] = &mm_sshpam_device;
-#endif
-#endif
 }

@@ -1,4 +1,4 @@
-/* $OpenBSD: dispatch.h,v 1.14 2017/05/31 07:00:13 markus Exp $ */
+/* $OpenBSD: dispatch.h,v 1.16 2026/03/03 09:57:25 dtucker Exp $ */
 
 /*
  * Copyright (c) 2000 Markus Friedl.  All rights reserved.
@@ -36,21 +36,14 @@ enum {
 
 struct ssh;
 
-typedef int dispatch_fn(int, u_int32_t, struct ssh *);
+typedef int dispatch_fn(int, uint32_t, struct ssh *);
 
-int	dispatch_protocol_error(int, u_int32_t, struct ssh *);
-int	dispatch_protocol_ignore(int, u_int32_t, struct ssh *);
+int	dispatch_protocol_error(int, uint32_t, struct ssh *);
+int	dispatch_protocol_ignore(int, uint32_t, struct ssh *);
 void	ssh_dispatch_init(struct ssh *, dispatch_fn *);
 void	ssh_dispatch_set(struct ssh *, int, dispatch_fn *);
 void	ssh_dispatch_range(struct ssh *, u_int, u_int, dispatch_fn *);
 int	ssh_dispatch_run(struct ssh *, int, volatile sig_atomic_t *);
 void	ssh_dispatch_run_fatal(struct ssh *, int, volatile sig_atomic_t *);
-
-#define dispatch_init(dflt) \
-	ssh_dispatch_init(active_state, (dflt))
-#define dispatch_range(from, to, fn) \
-	ssh_dispatch_range(active_state, (from), (to), (fn))
-#define dispatch_set(type, fn) \
-	ssh_dispatch_set(active_state, (type), (fn))
 
 #endif
