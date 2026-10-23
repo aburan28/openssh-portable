@@ -200,6 +200,8 @@ if test "$GCC" = "yes" || test "$GCC" = "egcs"; then
 
 	OSSH_CHECK_CFLAG_COMPILE([-pipe])
 	OSSH_CHECK_CFLAG_COMPILE([-Wunknown-warning-option])
+	OSSH_CHECK_CFLAG_COMPILE([-Wno-error=discarded-qualifiers])
+	OSSH_CHECK_CFLAG_COMPILE([-Wno-error=incompatible-pointer-types-discards-qualifiers])
 	OSSH_CHECK_CFLAG_COMPILE([-Wno-error=format-truncation])
 	OSSH_CHECK_CFLAG_COMPILE([-Qunused-arguments])
 	OSSH_CHECK_CFLAG_COMPILE([-Wall])
@@ -217,7 +219,6 @@ if test "$GCC" = "yes" || test "$GCC" = "egcs"; then
 	OSSH_CHECK_CFLAG_COMPILE([-Wbitwise-instead-of-logical])
 	OSSH_CHECK_CFLAG_COMPILE([-fno-strict-aliasing])
     if test "x$use_toolchain_hardening" = "x1"; then
-	OSSH_CHECK_CFLAG_COMPILE([-D_FORTIFY_SOURCE=2])
 	OSSH_CHECK_LDFLAG_LINK([-Wl,-z,relro])
 	OSSH_CHECK_LDFLAG_LINK([-Wl,-z,now])
 	OSSH_CHECK_LDFLAG_LINK([-Wl,-z,noexecstack])
@@ -777,6 +778,7 @@ case "$host" in
 	AC_DEFINE([DISABLE_WTMP], [1], [Define if you don't want to use wtmp])
 	;;
 *-*-cygwin*)
+	is_cygwin=1
 	LIBS="$LIBS /usr/lib/textreadmode.o"
 	AC_DEFINE([HAVE_CYGWIN], [1], [Define if you are on Cygwin])
 	AC_DEFINE([USE_PIPES], [1], [Use PIPES instead of a socketpair()])
@@ -786,6 +788,7 @@ case "$host" in
 		[Define if you want to disable shadow passwords])
 	AC_DEFINE([NO_X11_UNIX_SOCKETS], [1],
 		[Define if X11 doesn't support AF_UNIX sockets on that system])
+	no_fd_passing=1
 	AC_DEFINE([DISABLE_FD_PASSING], [1],
 		[Define if your platform needs to skip post auth
 		file descriptor passing])
@@ -1133,8 +1136,6 @@ mips-sony-bsd|mips-sony-newsos4)
 	AC_DEFINE([SSH_TUN_PREPEND_AF], [1],
 	    [Prepend the address family to IP tunnel traffic])
 	TEST_MALLOC_OPTIONS="AJRX"
-	AC_DEFINE([BROKEN_READ_COMPARISON], [1],
-	    [NetBSD read function is sometimes redirected, breaking atomicio comparisons against it])
 	;;
 *-*-freebsd*)
 	AC_DEFINE([LOCKED_PASSWD_PREFIX], ["*LOCKED*"], [Account locked with pw(1)])
@@ -1358,6 +1359,7 @@ if (setsockopt(s, IPPROTO_IP, IP_TOS, &one, sizeof(one)) == -1)
 	AC_DEFINE([USE_PIPES])
 	AC_DEFINE([HAVE_SECUREWARE])
 	AC_DEFINE([DISABLE_SHADOW])
+	no_fd_passing=1
 	AC_DEFINE([DISABLE_FD_PASSING])
 	AC_DEFINE([SETEUID_BREAKS_SETUID])
 	AC_DEFINE([BROKEN_GETADDRINFO])
@@ -1392,6 +1394,7 @@ if (setsockopt(s, IPPROTO_IP, IP_TOS, &one, sizeof(one)) == -1)
 			AC_DEFINE([DISABLE_LOGIN], [1],
 				[Define if you don't want to use your
 				system's login() call])
+			no_fd_passing=1
 			AC_DEFINE([DISABLE_FD_PASSING])
 			LIBS="$LIBS -lsecurity -ldb -lm -laud"
 			SIA_MSG="yes"
@@ -1417,6 +1420,7 @@ if (setsockopt(s, IPPROTO_IP, IP_TOS, &one, sizeof(one)) == -1)
 	enable_etc_default_login=no	# has incompatible /etc/default/login
 	case "$host" in
 	*-*-nto-qnx6*)
+		no_fd_passing=1
 		AC_DEFINE([DISABLE_FD_PASSING])
 		;;
 	esac
@@ -1429,6 +1433,7 @@ if (setsockopt(s, IPPROTO_IP, IP_TOS, &one, sizeof(one)) == -1)
 	AC_DEFINE([DISABLE_UTMPX], [1], [Disable utmpx])
 	# DISABLE_FD_PASSING so that we call setpgrp as root, otherwise we
 	# don't get a controlling tty.
+	no_fd_passing=1
 	AC_DEFINE([DISABLE_FD_PASSING], [1], [Need to call setpgrp as root])
 	# On Ultrix some headers are not protected against multiple includes,
 	# so we create wrappers and put it where the compiler will find it.
@@ -2137,6 +2142,7 @@ AC_CHECK_FUNCS([ \
 	getaddrinfo \
 	getcwd \
 	getentropy \
+	getexecpath \
 	getgrouplist \
 	getline \
 	getnameinfo \
@@ -2168,6 +2174,7 @@ AC_CHECK_FUNCS([ \
 	nlist \
 	nsleep \
 	ogetaddrinfo \
+	openat \
 	openlog_r \
 	pledge \
 	poll \
@@ -5514,16 +5521,6 @@ AC_DEFINE_UNQUOTED([_PATH_SSH_PIDDIR], ["$piddir"],
 	[Specify location of ssh.pid])
 AC_SUBST([piddir])
 
-
-AC_ARG_ENABLE([fd-passing],
-	[  --disable-fd-passing    disable file descriptor passsing [no]],
-	[
-		if test "x$enableval" = "xno" ; then
-			AC_DEFINE([DISABLE_FD_PASSING])
-		fi
-	]
-)
-
 dnl allow user to disable some login recording features
 AC_ARG_ENABLE([lastlog],
 	[  --disable-lastlog       disable use of lastlog even if detected [no]],
@@ -5938,3 +5935,10 @@ if test "$AUDIT_MODULE" = "bsm" ; then
 	echo "WARNING: BSM audit support is currently considered EXPERIMENTAL."
 	echo "See the Solaris section in README.platform for details."
 fi
+
+if test "x$no_fd_passing" = "x1" -a "x$is_cygwin" != "x1" ; then
+	echo "WARNING: support for platforms that lack file descriptor passing"
+	echo "and that also require root privileges for PTY allocation will be "
+	echo "deprecated in a future OpenSSH release."
+fi
+

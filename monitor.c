@@ -1,4 +1,4 @@
-/* $OpenBSD: monitor.c,v 1.258 2026/07/27 12:28:52 markus Exp $ */
+/* $OpenBSD: monitor.c,v 1.260 2026/10/11 20:41:20 dtucker Exp $ */
 /*
  * Copyright 2002 Niels Provos <provos@citi.umich.edu>
  * Copyright 2002 Markus Friedl <markus@openbsd.org>
@@ -1386,23 +1386,12 @@ monitor_valid_userblob(struct ssh *ssh, const u_char *data, u_int datalen)
 	if ((b = sshbuf_from(data, datalen)) == NULL)
 		fatal_f("sshbuf_from");
 
-	if (ssh->compat & SSH_OLD_SESSIONID) {
-		p = sshbuf_ptr(b);
-		len = sshbuf_len(b);
-		if ((session_id2 == NULL) ||
-		    (len < session_id2_len) ||
-		    (timingsafe_bcmp(p, session_id2, session_id2_len) != 0))
-			fail++;
-		if ((r = sshbuf_consume(b, session_id2_len)) != 0)
-			fatal_fr(r, "consume");
-	} else {
-		if ((r = sshbuf_get_string_direct(b, &p, &len)) != 0)
-			fatal_fr(r, "parse sessionid");
-		if ((session_id2 == NULL) ||
-		    (len != session_id2_len) ||
-		    (timingsafe_bcmp(p, session_id2, session_id2_len) != 0))
-			fail++;
-	}
+	if ((r = sshbuf_get_string_direct(b, &p, &len)) != 0)
+		fatal_fr(r, "parse sessionid");
+	if ((session_id2 == NULL) ||
+	    (len != session_id2_len) ||
+	    (timingsafe_bcmp(p, session_id2, session_id2_len) != 0))
+		fail++;
 	if ((r = sshbuf_get_u8(b, &type)) != 0)
 		fatal_fr(r, "parse type");
 	if (type != SSH2_MSG_USERAUTH_REQUEST)
@@ -1976,6 +1965,8 @@ mm_answer_gss_setup_ctx(struct ssh *ssh, int sock, struct sshbuf *m)
 
 	if (!options.gss_authentication)
 		fatal_f("GSSAPI authentication not enabled");
+
+	ssh_gssapi_cleanup_global_client();
 
 	if ((r = sshbuf_get_string(m, &p, &len)) != 0)
 		fatal_fr(r, "parse");
